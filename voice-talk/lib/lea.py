@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,79 @@ STT_MODEL = os.environ.get("MISTRAL_STT_MODEL", "voxtral-mini-latest")
 DEFAULT_VOICE_ID = os.environ.get(
     "MISTRAL_VOICE_ID", "a3e41ea8-020b-44c0-8d8b-f6cc03524e31"
 )
+
+log = logging.getLogger("lea")
+
+# ---------------------------------------------------------------------------
+# Guardrails that run in code, outside the model
+# 1. Moderation on every incoming message (Mistral moderation model).
+#    Runs here and not on the agent: agent-level guardrails do not work with
+#    the streaming Studio playground.
+# 2. Guest block: banking tools only run for a signed-in session, whatever
+#    the model asks for.
+# ---------------------------------------------------------------------------
+MODERATION_MODEL = os.environ.get("MISTRAL_MODERATION_MODEL", "mistral-moderation-2603")
+THRESHOLDS = {"jailbreaking": 0.3, "pii": 0.5}
+BANKING_TOOLS = {"get_account_balance", "lock_credit_card"}
+CARD_NUMBER = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
+PIN_VALUE = re.compile(r"\b(pin|code pin|code secret)\b\D{0,8}\d{4,6}\b", re.I)
+PASSWORD_VALUE = re.compile(r"\b(password|mot de passe)\s*(is|est|:|=)\s*\S+", re.I)
+
+
+def _luhn_ok(number: str) -> bool:
+    digits = [int(d) for d in number if d.isdigit()]
+    total = 0
+    for i, d in enumerate(reversed(digits)):
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return len(digits) >= 13 and total % 10 == 0
+
+
+def _contains_secret(text: str) -> bool:
+    for m in CARD_NUMBER.finditer(text):
+        is_phone = m.start() > 0 and text[m.start() - 1] == "+"
+        if not is_phone and _luhn_ok(m.group(0)):
+            return True
+    return bool(PIN_VALUE.search(text) or PASSWORD_VALUE.search(text))
+
+REPLY_BLOCKED = (
+    "I can't help with that. I can answer questions about accounts, cards and "
+    "branches, or connect you with an advisor."
+)
+REPLY_SECRET = (
+    "For your security, please don't share card numbers, PINs or passwords in chat. "
+    "BNP Paribas will never ask for them. How else can I help?"
+)
+
+
+def _scores(result: Any) -> dict[str, float]:
+    raw = getattr(result, "category_scores", None)
+    if raw is None and isinstance(result, dict):
+        raw = result.get("category_scores")
+    if hasattr(raw, "model_dump"):
+        raw = raw.model_dump()
+    return {k: float(v or 0) for k, v in dict(raw or {}).items()}
+
+
+def check_input(client: Any, text: str) -> dict[str, Any] | None:
+    """Return a block decision, or None when the message may go to the agent."""
+    if _contains_secret(text):
+        return {"reason": "secret_in_message", "reply": REPLY_SECRET}
+    try:
+        res = client.classifiers.moderate(model=MODERATION_MODEL, inputs=[text])
+        scores = _scores(res.results[0])
+    except Exception as e:  # noqa: BLE001 - never take the demo down on a moderation outage
+        log.warning("moderation unavailable: %s", e)
+        return None
+    for category, threshold in THRESHOLDS.items():
+        if scores.get(category, 0.0) >= threshold:
+            reply = REPLY_SECRET if category == "pii" else REPLY_BLOCKED
+            return {"reason": category, "score": round(scores[category], 3), "reply": reply}
+    return None
+
 
 # Alternate names → lean Studio tools (general Q uses KB, not tools)
 ALIASES = {
@@ -126,6 +201,16 @@ def run_turn(
     client = _client()
     tool_trace: list[dict[str, Any]] = []
 
+    # Guardrail 1: moderation before anything reaches the agent.
+    blocked = check_input(client, user_text)
+    if blocked:
+        return {
+            "conversation_id": conversation_id,
+            "assistant_text": blocked["reply"],
+            "tool_trace": [],
+            "guardrail": blocked,
+        }
+
     # On a fresh conversation, attach session context once (auth or guest).
     preamble = SESSION_PREAMBLE if authenticated else GUEST_PREAMBLE
     payload = user_text if conversation_id else (preamble + user_text)
@@ -149,11 +234,18 @@ def run_turn(
                 "conversation_id": conversation_id,
                 "assistant_text": texts[-1] if texts else "",
                 "tool_trace": tool_trace,
+                "guardrail": None,
             }
         results = []
         for call in calls:
             name = call.name
-            stub = stub_for(name, getattr(call, "arguments", None))
+            canonical = ALIASES.get(name, name)
+            if not authenticated and canonical in BANKING_TOOLS:
+                # Guardrail 2: enforced in code, not only in the prompt.
+                stub = {"ok": False, "error": "SIGN_IN_REQUIRED",
+                        "message": "The visitor is not signed in. Ask them to sign in first."}
+            else:
+                stub = stub_for(name, getattr(call, "arguments", None))
             tcid = call.tool_call_id or getattr(call, "id", None)
             tool_trace.append(
                 {
