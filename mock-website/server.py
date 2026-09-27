@@ -60,7 +60,8 @@ async def chat(payload: dict):
             },
             status_code=503,
         )
-    authenticated = bool(payload.get("authenticated", True))
+    # Default to guest: banking tools only for an explicitly signed-in session.
+    authenticated = bool(payload.get("authenticated", False))
     try:
         result = run_turn(text, conversation_id=conversation_id, authenticated=authenticated)
     except Exception as e:  # noqa: BLE001
@@ -79,6 +80,7 @@ async def chat(payload: dict):
         "reply": assistant,
         "conversation_id": result.get("conversation_id"),
         "tool_trace": result.get("tool_trace") or [],
+        "guardrail": result.get("guardrail"),
     }
 
 
