@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: lea-bnp-demo
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT --app-dir mock-website
+    healthCheckPath: /health
+    envVars:
+      - key: MISTRAL_API_KEY
+        sync: false
+      - key: MISTRAL_AGENT_ID
+        value: ag_01a0d88dbab7715789cfd424761a1c44
+      - key: PYTHON_VERSION
+        value: "3.12.8"
