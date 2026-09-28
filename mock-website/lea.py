@@ -74,6 +74,7 @@ class Turn:
         self.sources: list[str] = []
         self.guardrail_in = self.guardrail_out = self.decision = self.error = None
         self.scores: dict[str, float] | None = None
+        self.flags: list[str] = []
         self.pending: dict[str, Any] | None = None
 
     def send(self, inputs: Any) -> Any:
@@ -113,7 +114,7 @@ class Turn:
             "source": self.source, "kind": self.kind, "conversation_id": self.conversation_id,
             "signed_in": self.signed_in, "model_calls": self.model_calls, "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens, "moderation_tokens": self.moderation_tokens, "cost_usd": cost,
-            "latency_ms": latency_ms, "sources": self.sources, "scores": self.scores,
+            "latency_ms": latency_ms, "sources": self.sources, "scores": self.scores, "flags": self.flags,
             "guardrail_in": self.guardrail_in, "guardrail_out": self.guardrail_out,
             "moderation_unavailable": self.error == "moderation_unavailable",
             "pending": self.pending and self.pending["tool"], "decision": self.decision,
@@ -136,7 +137,7 @@ def chat(text: str, conversation_id: str | None = None, signed_in: bool = False,
     """One customer message in, one answer out (or a card lock waiting for confirmation)."""
     turn = Turn("chat", signed_in, source, conversation_id)
     check = guardrails.check_input(client(), text, masked)
-    turn.scores = check["scores"]
+    turn.scores, turn.flags = check["scores"], check["flags"]
     if check["scores"] is not None:
         turn.moderation_tokens = len(text) // 4 + 1
     if check["reason"] == "moderation_unavailable":

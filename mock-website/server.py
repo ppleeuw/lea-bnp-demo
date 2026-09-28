@@ -86,7 +86,7 @@ def admin_summary():
         "prices": {"input_per_million": metrics.PRICE_INPUT * 1e6, "output_per_million": metrics.PRICE_OUTPUT * 1e6},
         "live": metrics.summary("live"), "eval": metrics.summary("eval"),
         "recent": metrics.recent_turns(60), "runs": metrics.runs(),
-        "thresholds": guardrails.THRESHOLDS,
+        "thresholds": guardrails.THRESHOLDS, "monitored": guardrails.MONITORED,
     }
 
 

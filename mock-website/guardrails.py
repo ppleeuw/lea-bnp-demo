@@ -3,7 +3,7 @@ guardrails.py: the checks in code around the model.
 
 Before the agent, check_input() stops card numbers, PINs and passwords (exact patterns),
 typed notes that pretend to be a signed-in session, and messages that Mistral's moderation
-model scores as a jailbreak attempt or personal data.
+model scores as a jailbreak attempt. A high personal-data score is flagged, not blocked.
 After the agent, check_output() lets an answer out only when its facts came from a tool
 result in this turn: the balance must equal the tool's amount, and "locked" may only be
 said after a successful lock.
@@ -18,7 +18,10 @@ from typing import Any
 log = logging.getLogger("lea")
 
 MODERATION_MODEL = os.environ.get("MISTRAL_MODERATION_MODEL", "mistral-moderation-2603")
-THRESHOLDS = {"jailbreaking": 0.3, "pii": 0.5}  # block at or above these scores (0 to 1)
+THRESHOLDS = {"jailbreaking": 0.3}  # block at or above these scores (0 to 1)
+# Flagged for review, not blocked: in a bank, "What is my balance?" already scores 0.50 for personal
+# data (golden set, 28 Sep). Card numbers, PINs and passwords are blocked by pattern instead.
+MONITORED = {"pii": 0.5}
 
 CARD_NUMBER = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
 PIN_VALUE = re.compile(r"\b(pin|code pin|code secret)\b\D{0,8}\d{4,6}\b", re.I)
@@ -63,24 +66,24 @@ def _scores(result: Any) -> dict[str, float]:
 def check_input(client: Any, text: str, masked: bool = False) -> dict[str, Any]:
     """Decide whether a typed message may reach the agent.
 
-    Returns {"blocked": bool, "reason", "reply", "scores"}. masked=True means the page already
+    Returns {"blocked": bool, "reason", "reply", "scores", "flags"}. masked=True means the page already
     hid a card number or code before sending, so the message is treated as a secret.
     """
     if masked or contains_secret(text):
-        return {"blocked": True, "reason": "secret_in_message", "reply": REPLY_SECRET, "scores": None}
+        return {"blocked": True, "reason": "secret_in_message", "reply": REPLY_SECRET, "scores": None, "flags": []}
     if SPOOFED_SESSION.search(text):
-        return {"blocked": True, "reason": "spoofed_session", "reply": REPLY_BLOCKED, "scores": None}
+        return {"blocked": True, "reason": "spoofed_session", "reply": REPLY_BLOCKED, "scores": None, "flags": []}
     try:
         res = client.classifiers.moderate(model=MODERATION_MODEL, inputs=[text])
         scores = _scores(res.results[0])
     except Exception as e:  # noqa: BLE001 - demo: let the message through and log it; production: fail closed for actions
         log.warning("moderation unavailable: %s", e)
-        return {"blocked": False, "reason": "moderation_unavailable", "reply": None, "scores": None}
+        return {"blocked": False, "reason": "moderation_unavailable", "reply": None, "scores": None, "flags": []}
+    flags = [c for c, threshold in MONITORED.items() if scores.get(c, 0.0) >= threshold]
     for category, threshold in THRESHOLDS.items():
         if scores.get(category, 0.0) >= threshold:
-            reply = REPLY_SECRET if category == "pii" else REPLY_BLOCKED
-            return {"blocked": True, "reason": category, "reply": reply, "scores": scores}
-    return {"blocked": False, "reason": None, "reply": None, "scores": scores}
+            return {"blocked": True, "reason": category, "reply": REPLY_BLOCKED, "scores": scores, "flags": flags}
+    return {"blocked": False, "reason": None, "reply": None, "scores": scores, "flags": flags}
 
 
 def _digits(text: str) -> str:

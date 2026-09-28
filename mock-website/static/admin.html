@@ -168,7 +168,8 @@ footer{color:var(--ink-3);font-size:12.5px;padding:10px 0 30px}
     <div class="phead"><div class="grow"><h2 id="gr-t">Guardrails</h2><p>What the checks in code did, for the selected source. Counts per turn.</p></div></div>
     <div class="two" id="guard"></div>
     <div class="defs">
-      <div><b>Before the agent.</b> Card numbers (Luhn check), PINs and passwords by pattern; typed fake session notes; Mistral moderation: jailbreaking ≥ <span id="th-jb">0.3</span>, personal data ≥ <span id="th-pii">0.5</span>.</div>
+      <div><b>Before the agent.</b> Card numbers (Luhn check), PINs and passwords by pattern; typed fake session notes; Mistral moderation: jailbreaking ≥ <span id="th-jb">0.3</span> is blocked.</div>
+      <div><b>Flagged, not blocked.</b> Personal-data score ≥ <span id="th-pii">0.5</span>: logged for review. In a bank, "What is my balance?" already scores 0.50.</div>
       <div><b>Refused in code.</b> Banking tools for guests (SIGN_IN_REQUIRED), another customer's ID (CUSTOMER_MISMATCH), unknown card or account.</div>
       <div><b>Card-lock confirmations.</b> Every lock waits for the customer's tap and in-app approval: allowed, denied, or left unconfirmed.</div>
       <div><b>After the agent.</b> The balance in the answer must equal the tool result; "locked" only after a successful lock.</div>
@@ -197,7 +198,7 @@ footer{color:var(--ink-3);font-size:12.5px;padding:10px 0 30px}
   };
   var LABEL = {
     secret_in_message: 'Card number, PIN or password', spoofed_session: 'Fake session note', jailbreaking: 'Jailbreak attempt',
-    pii: 'Personal data', amount_not_from_tool: 'Amount not from the tool', lock_claim_without_tool: '"Locked" without a lock',
+    pii: 'Personal data (score ≥ 0.5)', amount_not_from_tool: 'Amount not from the tool', lock_claim_without_tool: '"Locked" without a lock',
     SIGN_IN_REQUIRED: 'Banking tool for a guest', CUSTOMER_MISMATCH: "Another customer's ID", CARD_NOT_FOUND: 'Unknown card',
     ACCOUNT_NOT_FOUND: 'Unknown account', UNKNOWN_TOOL: 'Unknown tool', allowed: 'Allowed (tap + approval)', denied: 'Denied (kept active)',
     not_confirmed: 'Left unconfirmed'
@@ -225,7 +226,7 @@ footer{color:var(--ink-3);font-size:12.5px;padding:10px 0 30px}
     $('#meta').innerHTML = '<span class="chip">Agent <b class="mono">' + esc(d.agent.id.slice(0, 12)) + '…</b></span>' +
       '<span class="chip">Version <b>' + esc(d.agent.version) + '</b></span><span class="chip">Model <b>' + esc(d.agent.model) + '</b></span>' +
       '<span class="chip">Guard <b>' + esc(d.agent.moderation) + '</b></span>';
-    $('#th-jb').textContent = d.thresholds.jailbreaking; $('#th-pii').textContent = d.thresholds.pii;
+    $('#th-jb').textContent = d.thresholds.jailbreaking; $('#th-pii').textContent = (d.monitored || {}).pii;
     renderRuns(d.runs || []);
     renderTraffic(d[state.src]);
     renderGuard(d[state.src]);
@@ -297,7 +298,8 @@ footer{color:var(--ink-3);font-size:12.5px;padding:10px 0 30px}
       bars('Blocked before the agent', 'The message never reached the model.', g.blocked_before_agent) +
       bars('Refused in code', 'The model asked for a tool; our code said no.', g.tool_refusals) +
       bars('Card-lock confirmations', 'Every lock waits for the customer.', g.confirmations) +
-      bars('Corrected after the agent', 'The answer was replaced before the customer saw it.', g.corrected_after_agent);
+      bars('Corrected after the agent', 'The answer was replaced before the customer saw it.', g.corrected_after_agent) +
+      bars('Flagged, not blocked', 'Moderation score above the review threshold; the message went through.', g.flagged_not_blocked);
   }
 
   function renderRecent(rows) {

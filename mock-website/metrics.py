@@ -95,6 +95,7 @@ def summary(source: str | None = None) -> dict[str, Any]:
             by_conversation[t["conversation_id"]] = by_conversation.get(t["conversation_id"], 0) + t["cost_usd"]
     blocked_in = Counter(t["guardrail_in"] for t in turns if t.get("guardrail_in"))
     corrected_out = Counter(t["guardrail_out"] for t in turns if t.get("guardrail_out"))
+    flagged = Counter(f for t in turns for f in (t.get("flags") or []))
     refusals = Counter(x["error"] for t in turns for x in t["tools"] if x.get("error"))
     tools = Counter(x["name"] for t in turns for x in t["tools"] if x.get("ok"))
     confirmations = Counter(t["decision"] for t in turns if t.get("decision"))
@@ -111,6 +112,7 @@ def summary(source: str | None = None) -> dict[str, Any]:
         "tokens": {"input": sum(t["input_tokens"] for t in turns), "output": sum(t["output_tokens"] for t in turns),
                    "model_calls": sum(t["model_calls"] for t in turns)},
         "guardrails": {"blocked_before_agent": dict(blocked_in), "corrected_after_agent": dict(corrected_out),
+                       "flagged_not_blocked": dict(flagged),
                        "tool_refusals": dict(refusals), "confirmations": dict(confirmations),
                        "passed_input_check": len(reached_agent)},
         "tools": dict(tools),
