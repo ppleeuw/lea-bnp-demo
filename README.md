@@ -22,7 +22,7 @@ A demo retail-banking website with Léa, a customer support assistant built on a
 
 ## The rule: the model proposes, code decides
 
-1. **Input check** (`guardrails.check_input`): card numbers (Luhn), PINs, passwords, typed fake session notes; moderation scores for jailbreaking (≥ 0.3) and personal data (≥ 0.5).
+1. **Input check** (`guardrails.check_input`): card numbers (Luhn), PINs, passwords, typed fake session notes; moderation blocks jailbreaking (≥ 0.3); the personal-data score (≥ 0.5) is flagged, not blocked.
 2. **Guest block** (`demo_bank.check`): banking tools only for a signed-in session.
 3. **Customer check**: the customer ID in a tool call must be the signed-in customer.
 4. **Confirmation hold** (`lea._tool_loop`): a card lock is not run when the model asks; it waits as "pending" until the customer taps "Lock card" and approves in the app (`/api/confirm`).
@@ -46,6 +46,11 @@ python mock-website/evals.py --base https://lea-bnp-demo.onrender.com --save
 
 `--save` writes the run to `eval/results/`, which the console shows as history. Exit code 1 on any failure, so it can gate a release.
 
+## Setup notes
+
+- The Mistral Library must be shared with the workspace (Studio → Libraries → Share → Viewers: Entire workspace). A private library fails with "Error calling tool 'library_search'" when the agent runs through an API key.
+- The personal-data moderation score is logged, not blocked: in a bank, "What is my balance?" already scores 0.50 (golden set, 28 Sep).
+
 ## Deploy (Render)
 
-`render.yaml` describes the service. Set `MISTRAL_API_KEY` in the Render dashboard; never commit it. Optional: `MISTRAL_AGENT_VERSION` pins the agent version (default: latest).
+`render.yaml` describes the service. This service does not deploy by itself: after a push use Manual Deploy → Deploy latest commit. Set `MISTRAL_API_KEY` in the Render dashboard; never commit it. Optional: `MISTRAL_AGENT_VERSION` pins the agent version (default: latest).

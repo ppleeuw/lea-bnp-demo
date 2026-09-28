@@ -27,6 +27,11 @@ import metrics
 
 STATIC = Path(__file__).resolve().parent / "static"
 
+
+def _source(payload: dict) -> str:
+    """'eval' when the golden set calls over HTTP, so its turns are not counted as visitors."""
+    return "eval" if payload.get("source") == "eval" else "live"
+
 app = FastAPI(title="BNP Léa demo")
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
@@ -61,7 +66,7 @@ def chat(payload: dict):
     try:
         return lea.chat(text, conversation_id=payload.get("conversation_id") or None,
                         signed_in=bool(payload.get("authenticated", False)),  # default: guest
-                        masked=bool(payload.get("masked", False)))
+                        masked=bool(payload.get("masked", False)), source=_source(payload))
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"error": f"agent error: {e}", "answer": ""}, status_code=502)
 
@@ -73,7 +78,7 @@ def confirm(payload: dict):
     if not lea.has_api_key():
         return _no_key()
     try:
-        return lea.confirm(payload["conversation_id"], approve=bool(payload.get("approve")))
+        return lea.confirm(payload["conversation_id"], approve=bool(payload.get("approve")), source=_source(payload))
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"error": f"agent error: {e}", "answer": ""}, status_code=502)
 

@@ -123,7 +123,7 @@ def in_process(kind: str, body: dict[str, Any]) -> dict[str, Any]:
 
 def over_http(base: str) -> Sender:
     def send(kind: str, body: dict[str, Any]) -> dict[str, Any]:
-        req = urllib.request.Request(f"{base.rstrip('/')}/api/{kind}", data=json.dumps(body).encode("utf-8"),
+        req = urllib.request.Request(f"{base.rstrip('/')}/api/{kind}", data=json.dumps(dict(body, source="eval")).encode("utf-8"),
                                      headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=120) as r:
             return json.loads(r.read().decode("utf-8"))
