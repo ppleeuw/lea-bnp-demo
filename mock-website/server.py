@@ -44,8 +44,10 @@ def health():
     }
 
 
+# A plain def, not async def: FastAPI then runs each chat in a worker thread, so one slow
+# model call does not hold up every other visitor.
 @app.post("/api/chat")
-async def chat(payload: dict):
+def chat(payload: dict):
     text = (payload.get("text") or "").strip()
     conversation_id = payload.get("conversation_id") or None
     if not text:
@@ -62,8 +64,11 @@ async def chat(payload: dict):
         )
     # Default to guest: banking tools only for an explicitly signed-in session.
     authenticated = bool(payload.get("authenticated", False))
+    # Set by the page after the "Lock card" tap and the in-app approval, never by typed text.
+    confirmed_action = payload.get("confirmed_action") or None
     try:
-        result = run_turn(text, conversation_id=conversation_id, authenticated=authenticated)
+        result = run_turn(text, conversation_id=conversation_id, authenticated=authenticated,
+                          confirmed_action=confirmed_action)
     except Exception as e:  # noqa: BLE001
         return JSONResponse(
             {
@@ -80,7 +85,9 @@ async def chat(payload: dict):
         "reply": assistant,
         "conversation_id": result.get("conversation_id"),
         "tool_trace": result.get("tool_trace") or [],
+        "sources": result.get("sources") or [],
         "guardrail": result.get("guardrail"),
+        "trace_id": result.get("trace_id"),
     }
 
 

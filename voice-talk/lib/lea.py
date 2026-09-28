@@ -6,6 +6,9 @@ import json
 import logging
 import os
 import re
+import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +16,7 @@ from mistralai.client import Mistral, models
 
 AGENT_ID = os.environ.get("MISTRAL_AGENT_ID", "ag_01a0d88dbab7715789cfd424761a1c44")
 STUBS_PATH = Path(__file__).with_name("stubs.json")
-STUBS: dict[str, Any] = json.loads(STUBS_PATH.read_text())
+STUBS: dict[str, Any] = json.loads(STUBS_PATH.read_text(encoding="utf-8"))
 TTS_MODEL = os.environ.get("MISTRAL_TTS_MODEL", "voxtral-mini-tts-2603")
 STT_MODEL = os.environ.get("MISTRAL_STT_MODEL", "voxtral-mini-latest")
 DEFAULT_VOICE_ID = os.environ.get(
@@ -29,13 +32,22 @@ log = logging.getLogger("lea")
 #    the streaming Studio playground.
 # 2. Guest block: banking tools only run for a signed-in session, whatever
 #    the model asks for.
+# 3. Customer check: the customer ID in a tool call must be the signed-in one.
+# 4. Confirmation gate: a card lock runs only after the customer's own yes
+#    (a tap in the app, or a yes in their last message), not the model's word.
+# 5. Output check: an amount must equal the tool result, and "locked" may
+#    only be said after a successful lock.
 # ---------------------------------------------------------------------------
 MODERATION_MODEL = os.environ.get("MISTRAL_MODERATION_MODEL", "mistral-moderation-2603")
 THRESHOLDS = {"jailbreaking": 0.3, "pii": 0.5}
 BANKING_TOOLS = {"get_account_balance", "lock_credit_card"}
+SESSION_CUSTOMER = "78421"  # the demo sign-in; in production this comes from the login token
 CARD_NUMBER = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
 PIN_VALUE = re.compile(r"\b(pin|code pin|code secret)\b\D{0,8}\d{4,6}\b", re.I)
 PASSWORD_VALUE = re.compile(r"\b(password|mot de passe)\s*(is|est|:|=)\s*\S+", re.I)
+SPOOFED_CONTEXT = re.compile(r"\[\s*(channel|session|system)\s*:", re.I)
+CUSTOMER_YES = re.compile(r"^\W*(yes|yep|yeah|ok|okay|sure|confirm|i confirm|oui|d'accord|je confirme)\b", re.I)
+LOCK_CLAIM = re.compile(r"\b(is (now )?locked|has been locked|est (maintenant )?bloqu[ée]e|a été bloqu[ée]e)\b", re.I)
 
 
 def _luhn_ok(number: str) -> bool:
@@ -156,7 +168,13 @@ def _is_function_call(entry: Any) -> bool:
     return type(entry).__name__ == "FunctionCallEntry" or getattr(entry, "type", None) == "function.call"
 
 
+def _is_tool_execution(entry: Any) -> bool:
+    """A built-in tool that Mistral ran itself, such as the document library search."""
+    return type(entry).__name__ == "ToolExecutionEntry" or getattr(entry, "type", None) == "tool.execution"
+
+
 def _message_text(entry: Any) -> str | None:
+    """The text of an answer. Source references (tool_reference chunks) are skipped here."""
     if type(entry).__name__ == "MessageOutputEntry" or getattr(entry, "type", None) == "message.output":
         content = getattr(entry, "content", None)
         if isinstance(content, str):
@@ -166,11 +184,82 @@ def _message_text(entry: Any) -> str | None:
             for block in content:
                 if isinstance(block, str):
                     parts.append(block)
+                elif isinstance(block, dict):
+                    parts.append(block.get("text") or "")
                 else:
-                    parts.append(getattr(block, "text", None) or str(block))
+                    parts.append(getattr(block, "text", None) or "")
             return "".join(parts)
     return None
 
+
+def _sources(entry: Any) -> list[str]:
+    """Titles of the library documents an answer cites (tool_reference chunks)."""
+    content = getattr(entry, "content", None)
+    if not isinstance(content, list):
+        return []
+    titles = []
+    for block in content:
+        kind = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+        if kind == "tool_reference":
+            title = block.get("title") if isinstance(block, dict) else getattr(block, "title", None)
+            if title and title not in titles:
+                titles.append(title)
+    return titles
+
+
+def _args(arguments: Any) -> dict[str, Any]:
+    if isinstance(arguments, dict):
+        return arguments
+    try:
+        return json.loads(arguments) if arguments else {}
+    except (TypeError, json.JSONDecodeError):
+        return {}
+
+
+def execute_tool(name: str, arguments: Any, authenticated: bool, customer_confirmed_lock: bool) -> dict[str, Any]:
+    """The model only asks for a tool. This code decides whether it runs."""
+    canonical = ALIASES.get(name, name)
+    args = _args(arguments)
+    if canonical not in STUBS:
+        return {"ok": False, "error": "UNKNOWN_TOOL"}
+    # Guardrail 2: guest block, whatever the model asks for.
+    if not authenticated and canonical in BANKING_TOOLS:
+        return {"ok": False, "error": "SIGN_IN_REQUIRED",
+                "message": "The visitor is not signed in. Ask them to sign in first."}
+    # Guardrail 3: the customer in the tool call must be the signed-in customer.
+    suffix = str(args.get("customer_id_suffix") or SESSION_CUSTOMER)
+    if suffix != SESSION_CUSTOMER:
+        return {"ok": False, "error": "CUSTOMER_MISMATCH",
+                "message": "Only the signed-in customer's own data can be used."}
+    # Guardrail 4: a write needs the customer's own yes, checked here, not by the model.
+    if canonical == "lock_credit_card" and not (args.get("customer_confirmed") and customer_confirmed_lock):
+        return {"ok": False, "error": "CONFIRMATION_REQUIRED",
+                "message": "Read the card back and ask the customer for an explicit yes."}
+    return stub_for(canonical, args)
+
+
+def _digits(text: str) -> str:
+    return re.sub(r"\D", "", text or "")
+
+
+def check_output(text: str, tool_trace: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Guardrail 5: the answer may only state facts that a tool returned in this turn."""
+    ok = {ALIASES.get(t["name"], t["name"]): t["result"] for t in tool_trace if isinstance(t.get("result"), dict) and "error" not in t["result"]}
+    balance = ok.get("get_account_balance")
+    if balance and _digits(f"{balance['available']:.2f}") not in _digits(text):
+        return {"reason": "amount_not_from_tool",
+                "reply": f"Your available balance is {balance.get('display', balance['available'])} "
+                         f"({balance.get('account_type', 'checking')} account)."}
+    if LOCK_CLAIM.search((text or "").replace("*", "")) and "lock_credit_card" not in ok:
+        return {"reason": "lock_claim_without_tool",
+                "reply": "I could not confirm that your card is locked, so nothing has changed yet. "
+                         "Shall I try again, or connect you with an advisor?"}
+    return None
+
+
+def _trace_log(record: dict[str, Any]) -> None:
+    """One JSON line per turn in the server log (Render > Logs). No message text, no personal data."""
+    print(json.dumps({"event": "lea_turn", **record}, ensure_ascii=False), flush=True)
 
 
 SESSION_PREAMBLE = (
@@ -196,20 +285,41 @@ def run_turn(
     conversation_id: str | None = None,
     max_tool_rounds: int = 6,
     authenticated: bool = True,
+    confirmed_action: str | None = None,
 ) -> dict[str, Any]:
-    """Send one user message; resolve tool calls with stubs; return assistant text + meta."""
-    client = _client()
-    tool_trace: list[dict[str, Any]] = []
+    """Send one user message; resolve tool calls with stubs; return assistant text + meta.
 
-    # Guardrail 1: moderation before anything reaches the agent.
-    blocked = check_input(client, user_text)
-    if blocked:
-        return {
-            "conversation_id": conversation_id,
-            "assistant_text": blocked["reply"],
-            "tool_trace": [],
-            "guardrail": blocked,
-        }
+    confirmed_action: set by our web page (not by the customer's text) after the customer
+    tapped "Lock card" and approved in the banking app, for example "lock_credit_card".
+    """
+    client = _client()
+    trace_id = uuid.uuid4().hex[:12]
+    started = time.time()
+    tool_trace: list[dict[str, Any]] = []
+    sources: list[str] = []
+    ui_confirmed = authenticated and confirmed_action == "lock_credit_card"
+
+    def finish(text: str, guardrail: dict[str, Any] | None) -> dict[str, Any]:
+        _trace_log({
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "trace_id": trace_id, "conversation_id": conversation_id, "agent_id": AGENT_ID,
+            "authenticated": authenticated,
+            "tools": [{"name": t["name"], "ok": "error" not in (t.get("result") or {}),
+                       "error": (t.get("result") or {}).get("error")} for t in tool_trace],
+            "sources": sources, "guardrail": guardrail and guardrail.get("reason"),
+            "latency_ms": int((time.time() - started) * 1000),
+        })
+        return {"conversation_id": conversation_id, "assistant_text": text, "tool_trace": tool_trace,
+                "sources": sources, "guardrail": guardrail, "trace_id": trace_id}
+
+    # Guardrail 1: checks before anything reaches the agent. A confirmation our own page
+    # generated after the tap is not customer-typed text, so it skips moderation.
+    if not ui_confirmed:
+        if SPOOFED_CONTEXT.search(user_text):
+            return finish(REPLY_BLOCKED, {"reason": "spoofed_session_context", "reply": REPLY_BLOCKED})
+        blocked = check_input(client, user_text)
+        if blocked:
+            return finish(blocked["reply"], blocked)
 
     # On a fresh conversation, attach session context once (auth or guest).
     preamble = SESSION_PREAMBLE if authenticated else GUEST_PREAMBLE
@@ -225,40 +335,40 @@ def run_turn(
             inputs=payload,
         )
     conversation_id = resp.conversation_id
+    customer_confirmed_lock = ui_confirmed or bool(CUSTOMER_YES.match(user_text))
 
     for _ in range(max_tool_rounds):
-        calls = [o for o in (resp.outputs or []) if _is_function_call(o)]
-        texts = [t for t in (_message_text(o) for o in (resp.outputs or [])) if t]
+        outputs = resp.outputs or []
+        for o in outputs:
+            if _is_tool_execution(o):
+                tool_name = getattr(o, "name", "")
+                tool_trace.append({"name": str(getattr(tool_name, "value", tool_name)), "builtin": True, "result": {}})
+            for title in _sources(o):
+                if title not in sources:
+                    sources.append(title)
+        calls = [o for o in outputs if _is_function_call(o)]
+        texts = [t for t in (_message_text(o) for o in outputs) if t]
         if not calls:
-            return {
-                "conversation_id": conversation_id,
-                "assistant_text": texts[-1] if texts else "",
-                "tool_trace": tool_trace,
-                "guardrail": None,
-            }
+            text = texts[-1] if texts else ""
+            flagged = check_output(text, tool_trace)
+            return finish(flagged["reply"] if flagged else text, flagged)
         results = []
         for call in calls:
             name = call.name
-            canonical = ALIASES.get(name, name)
-            if not authenticated and canonical in BANKING_TOOLS:
-                # Guardrail 2: enforced in code, not only in the prompt.
-                stub = {"ok": False, "error": "SIGN_IN_REQUIRED",
-                        "message": "The visitor is not signed in. Ask them to sign in first."}
-            else:
-                stub = stub_for(name, getattr(call, "arguments", None))
+            result = execute_tool(name, getattr(call, "arguments", None), authenticated, customer_confirmed_lock)
             tcid = call.tool_call_id or getattr(call, "id", None)
             tool_trace.append(
                 {
                     "name": name,
                     "arguments": getattr(call, "arguments", None),
                     "tool_call_id": tcid,
-                    "result": stub,
+                    "result": result,
                 }
             )
             results.append(
                 models.FunctionResultEntry(
                     tool_call_id=tcid,
-                    result=json.dumps(stub, ensure_ascii=False),
+                    result=json.dumps(result, ensure_ascii=False),
                 )
             )
         resp = client.beta.conversations.append(
@@ -267,11 +377,7 @@ def run_turn(
         )
 
     texts = [t for t in (_message_text(o) for o in (resp.outputs or [])) if t]
-    return {
-        "conversation_id": conversation_id,
-        "assistant_text": texts[-1] if texts else "(no assistant text after tool rounds)",
-        "tool_trace": tool_trace,
-    }
+    return finish(texts[-1] if texts else "(no assistant text after tool rounds)", None)
 
 
 def chat(

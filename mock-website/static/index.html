@@ -543,10 +543,11 @@ body.lea-lock{overflow:hidden}
       })();
     });
   }
-  function apiChat(text) {
+  function apiChat(text, extra) {
     var ac = new AbortController();
     S.abort = ac;
     var body = { text: text, conversation_id: S.conversationId, authenticated: !!S.auth };
+    if (extra) Object.keys(extra).forEach(function (k) { body[k] = extra[k]; });
     var fetchP = fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -610,6 +611,13 @@ body.lea-lock{overflow:hidden}
     var m = text.match(/LCK-[A-Z0-9-]+/i);
     return m ? m[0] : null;
   }
+  function sourceLink(g, data) {
+    var s = (data && data.sources) || [];
+    if (!s.length) return;
+    var a = h('a', 'link', I.file + '<span></span>'); a.href = '#';
+    a.lastChild.textContent = 'Source: ' + s.join(', ');
+    g.append(a);
+  }
   function followUpsFromContext(g) {
     var items = S.auth
       ? [
@@ -640,6 +648,7 @@ body.lea-lock{overflow:hidden}
       var reply = data.assistant_text || data.reply || 'Done.';
       var html = mdLite(reply);
       return say(g, html, { instant: true }).then(function () {
+        sourceLink(g, data);
         feedback(g, strip(html.replace(/<br>/g, ' ')));
         followUpsFromContext(g);
       });
@@ -785,19 +794,21 @@ body.lea-lock{overflow:hidden}
         return say(g, 'Sorry, I could not check your balance right now. Please try again or talk to an advisor.', { instant: true })
           .then(function () { chips(g, [{ label: 'Talk to an advisor', icon: 'headset' }]); });
       }
-      st.done('Checked your current account');
-      var amt = extractBalance(data) || '€4,287.63';
-      var reply = data.assistant_text || data.reply || ('You have **' + amt + '** available in your current account.');
+      /* the balance card is shown only when the balance tool really ran: no amount from the page itself */
+      var bal = toolResult(data.tool_trace, 'get_account_balance');
+      var amt = bal && !bal.error ? extractBalance(data) : null;
+      st.done(amt ? 'Checked your current account' : 'Balance not checked');
+      var reply = data.assistant_text || data.reply || 'Sorry, I could not check your balance right now.';
       var html = mdLite(reply);
       return say(g, html, { instant: true }).then(function () {
-        g.append(balanceCard(amt)); reveal(g);
+        if (amt) { g.append(balanceCard(amt)); reveal(g); }
         feedback(g, strip(html.replace(/<br>/g, ' ')));
-        chips(g, [{ label: 'Pending payments' }, { label: 'Low-balance alert' }]);
+        chips(g, amt ? [{ label: 'Lock my card', icon: 'lock' }, { label: 'Low-balance alert' }]
+                     : [{ label: 'Talk to an advisor', icon: 'headset' }]);
       });
     });
   }
   function balanceCard(available) {
-    available = available || '€4,287.63';
     var booked = available;
     var pending = '€0.00';
     var c = h('div', 'card',
@@ -818,22 +829,8 @@ body.lea-lock{overflow:hidden}
     return c;
   }
   function flowPending() {
-    S.misses = 0; var g = group(), st = status(g, 'Loading pending card payments…');
-    return sleep(800).then(function () {
-      st.done('Loaded 3 pending card payments');
-      return say(g, 'You have 3 pending card payments, totalling <strong class="num">€180.00</strong>.');
-    }).then(function () {
-      var c = h('div', 'card',
-        '<div class="row"><span class="col"><span>Supermarket</span><span class="muted small">Today</span></span><span class="num">−€42.80</span></div>' +
-        '<div class="rule"></div>' +
-        '<div class="row"><span class="col"><span>Train ticket</span><span class="muted small">Yesterday</span></span><span class="num">−€112.70</span></div>' +
-        '<div class="rule"></div>' +
-        '<div class="row"><span class="col"><span>Restaurant</span><span class="muted small">Yesterday</span></span><span class="num">−€24.50</span></div>' +
-        '<a class="link" href="#">' + I.ext + '<span>See all transactions</span></a>');
-      g.append(c); reveal(g);
-      feedback(g, 'You have 3 pending card payments, totalling €180.00.');
-      chips(g, [{ label: 'Lock my card', icon: 'lock' }]);
-    });
+    /* transactions are out of scope for this prototype: the agent says so and offers an advisor */
+    return flowLive(S.lastText || 'Show my pending card payments', 'Léa is thinking…', 'Ready');
   }
   function flowAlert() {
     S.misses = 0; var g = group();
@@ -888,12 +885,23 @@ body.lea-lock{overflow:hidden}
     var g = group();
     return sca(g, 'lock your card').then(function () {
       var st = status(g, 'Locking your card…');
-      return apiChat('Please lock my card ending 4412').then(function (data) {
-        var ref = extractLockRef(data) || ('LCK-' + (10000 + Math.floor(Math.random() * 89999)));
+      /* the customer tapped "Lock card" and approved in the app: send their explicit yes, and tell
+         the server this confirmation came from the tap (confirmed_action), not from typed text */
+      return apiChat('Yes, I confirm: please lock my Visa Classic ending 4412. Reason: lost. I approved this in my banking app.',
+                     { confirmed_action: 'lock_credit_card' }).then(function (data) {
+        var lock = toolResult(data.tool_trace, 'lock_credit_card');
+        var reply = data.assistant_text || data.reply || '';
+        if (!lock || lock.error || lock.status !== 'locked') {
+          /* no receipt without a successful tool result */
+          st.el.classList.add('stopped'); st.el.innerHTML = I.xcircle + '<span></span>';
+          st.el.lastChild.textContent = 'Card not locked';
+          return say(g, mdLite(reply || 'I could not lock your card, so nothing has changed. Please try again or talk to an advisor.'), { instant: true })
+            .then(function () { chips(g, [{ label: 'Lock my card', icon: 'lock' }, { label: 'Talk to an advisor', icon: 'headset' }]); });
+        }
+        var ref = extractLockRef(data);
         st.done('Card lock confirmed');
         S.locked = true; syncPageCard();
-        var reply = data.assistant_text || data.reply ||
-          'Done, your card ending 4412 is locked. If it was stolen, I can block it for good and order a new one.';
+        reply = reply || 'Done, your card ending 4412 is locked. If it was stolen, I can block it for good and order a new one.';
         return say(g, mdLite(reply), { instant: true }).then(function () {
           var c = h('div', 'card',
             '<div class="cardhead"><div class="tint">' + I.lock + '</div><div class="col grow"><span class="strong">Card locked</span><span class="muted small num">Visa Classic ···· 4412</span></div><span class="pill ok">Locked</span></div>' +
@@ -935,29 +943,9 @@ body.lea-lock{overflow:hidden}
                         : [{ label: 'Lock my card', icon: 'lock' }, { label: 'Talk to an advisor', icon: 'headset' }]);
     });
   }
-  function branchNow() {
-    var d = new Date(), day = d.getDay(), m = d.getHours() * 60 + d.getMinutes();
-    var weekday = day >= 1 && day <= 5, open = weekday && m >= 540 && m < 1050, next = '';
-    if (!open) next = (weekday && m < 540) ? 'today at 9:00' : (day === 5 || day === 6 || day === 0) ? 'on Monday at 9:00' : 'tomorrow at 9:00';
-    return { open: open, next: next };
-  }
   function flowBranch() {
-    S.misses = 0; var g = group(), st = status(g, 'Looking up Paris Opéra…'), b = branchNow();
-    return sleep(600).then(function () {
-      st.done('Checked the branch directory');
-      return say(g, b.open ? 'Paris Opéra is open today until 17:30.' : 'Paris Opéra is closed right now. It opens ' + b.next + '.');
-    }).then(function () {
-      var c = h('div', 'card',
-        '<div class="row"><span class="strong lg">Paris Opéra</span><span class="pill ' + (b.open ? 'ok' : 'shut') + '">' + (b.open ? 'Open now' : 'Closed now') + '</span></div>' +
-        '<div class="line">' + I.pin + '<span>2 Bd des Capucines, 75009 Paris</span></div>' +
-        '<div class="line">' + I.clock + '<span>Mon–Fri, 9:00–17:30</span></div>' +
-        '<div class="btnrow"><a class="btn btn-s" href="https://www.google.com/maps/search/?api=1&amp;query=2%20Boulevard%20des%20Capucines%2075009%20Paris" target="_blank" rel="noopener">Directions</a></div>');
-      var book = btn('btn btn-p', 'Book an appointment', function () { submit('Book an appointment', flowBook); });
-      c.querySelector('.btnrow').append(book);
-      g.append(c);
-      var src = h('a', 'link', I.file + '<span>Source: Paris Opéra branch page</span>'); src.href = '#'; g.append(src);
-      feedback(g, 'Paris Opéra, 2 Bd des Capucines, 75009 Paris. Mon–Fri, 9:00–17:30.');
-    });
+    /* branch hours and addresses come from the agent's document library (RAG), for any branch */
+    return flowLive(S.lastText || 'What are the opening hours of the Paris Opéra branch?', 'Searching branch information…', 'Checked branch information');
   }
   function nextSlots() {
     var d = new Date(), tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
