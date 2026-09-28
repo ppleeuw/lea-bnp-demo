@@ -4,7 +4,7 @@
     "name": "Lea triage - BNP Paribas demo",
     "label": "Triage",
     "model": "mistral-small-latest",
-    "temperature": 0.2,
+    "temperature": 0,
     "description": "Routes every customer message to the FAQ, account or card agent; answers greetings, out-of-scope and advisor requests itself.",
     "tools": ["transfer_to_advisor"],
     "hands_off_to": ["faq", "account", "card"]
