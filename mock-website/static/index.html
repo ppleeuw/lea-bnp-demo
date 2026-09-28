@@ -61,12 +61,6 @@ svg{display:block}
 .hero h1{margin:0;font-size:52px;line-height:1.1;font-weight:800;letter-spacing:-.01em}
 .hero h1 .accent{color:var(--accent)}
 .hero p{margin:20px 0 0;font-size:19px;line-height:1.55;max-width:520px;color:#E6EFEA}
-.hero-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:28px}
-.pbtn{height:48px;padding:0 22px;border-radius:8px;font-size:16px;font-weight:600;display:inline-flex;align-items:center;gap:8px;text-decoration:none;border:1px solid #FFFFFF;cursor:pointer;background:none;color:#FFFFFF}
-.pbtn svg{width:18px;height:18px}
-.pbtn-w{background:#FFFFFF;color:var(--brand-800)}
-.pbtn-w:hover{background:var(--mint);color:var(--brand-800)}
-.pbtn-o:hover{background:rgba(255,255,255,.1);color:#FFFFFF}
 .visa{justify-self:center;width:min(380px,100%);aspect-ratio:1.586;border-radius:18px;padding:26px;display:flex;flex-direction:column;justify-content:space-between;color:#FFFFFF;
   background:linear-gradient(135deg,#00915A 0%,#007549 45%,#004A2B 100%);box-shadow:0 30px 60px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.25);transform:rotate(-6deg)}
 .visa .top{display:flex;justify-content:space-between;align-items:center;font-size:14px;font-weight:600;letter-spacing:.04em}
@@ -74,21 +68,17 @@ svg{display:block}
 .visa .pan{font-size:22px;letter-spacing:.14em;font-variant-numeric:tabular-nums}
 .visa .bottom{display:flex;justify-content:space-between;align-items:flex-end;font-size:13px}
 .visa .brandmark{font-size:30px;font-weight:800;font-style:italic;letter-spacing:.02em}
-.proof{background:#0A2A1C;color:#FFFFFF}
-.proof-in{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px;padding-top:22px;padding-bottom:22px}
-.proof-in div{display:flex;align-items:baseline;gap:12px}
-.proof-in b{font-size:26px;font-weight:800;color:var(--accent);white-space:nowrap}
-.proof-in span{font-size:15px;line-height:1.4;color:#D5E3DB}
 main .content{padding-top:40px;padding-bottom:128px}
 .panel{background:#FFFFFF;border-radius:16px;padding:28px 32px;display:flex;align-items:center;gap:24px;flex-wrap:wrap;border:1px solid var(--line)}
 .panel h2{margin:0;font-size:22px;font-weight:700}
 .panel p{margin:4px 0 0;font-size:16px;line-height:1.5;color:var(--ink-2)}
 .panel .grow{flex:1;min-width:240px}
+#guest-panel .grow{flex:0 1 auto}
+#guest-panel{gap:32px}
 .kvs{display:flex;gap:12px;flex-wrap:wrap}
 .kv{border-radius:8px;background:var(--tint-2);border:1px solid var(--tint-line);padding:10px 14px;font-size:14px;display:flex;flex-direction:column;gap:2px}
 .kv span{color:var(--ink-3)}
 .kv b{color:var(--ink);font-weight:700}
-.sec-title{margin:44px 0 18px;font-size:26px;font-weight:700}
 .ov{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;margin-top:20px}
 .ovc{background:#FFFFFF;border:1px solid var(--line);border-radius:16px;padding:24px;display:flex;flex-direction:column;gap:8px}
 .ovc .k{font-size:13px;letter-spacing:.06em;font-weight:600;color:var(--ink-3)}
@@ -96,26 +86,11 @@ main .content{padding-top:40px;padding-bottom:128px}
 .ovc .s{font-size:15px;color:var(--ink-3)}
 .tag{align-self:flex-start;font-size:12px;font-weight:700;padding:4px 10px;border-radius:8px;background:var(--tint);color:var(--brand-700)}
 .tag-lock{background:#FDEBDD;color:var(--warn)}
-.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:20px}
-.tile{border-radius:16px;padding:24px;display:flex;flex-direction:column;gap:12px;min-height:220px;background:#FFFFFF;border:1px solid var(--line)}
-.tile.mint{background:var(--mint);border-color:#B5F0CB}
-.tile.green{background:var(--brand-800);border-color:var(--brand-800);color:#FFFFFF}
-.tile .ic{width:44px;height:44px;border-radius:8px;background:var(--tint);color:var(--brand-700);display:flex;align-items:center;justify-content:center}
-.tile.mint .ic{background:#FFFFFF}
-.tile.green .ic{background:rgba(255,255,255,.12);color:var(--accent)}
-.tile .ic svg{width:22px;height:22px}
-.tile h3{margin:0;font-size:18px;font-weight:700}
-.tile p{margin:0;font-size:15px;line-height:1.5;color:var(--ink-2);flex:1}
-.tile.green p{color:#D5E3DB}
-.tile .ask{align-self:flex-start;height:40px;padding:0 14px;border-radius:8px;border:1px solid var(--brand);background:#FFFFFF;color:var(--brand);font-size:14px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
-.tile .ask:hover{background:var(--tint-2)}
-.tile.green .ask{background:var(--accent);border-color:var(--accent);color:var(--hero)}
-.tile .ask svg{width:16px;height:16px}
-@media (max-width:1080px){.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.tagline{display:none}}
-@media (max-width:900px){.hero-in{grid-template-columns:1fr}.visa{display:none}.proof-in{grid-template-columns:1fr;gap:10px}.ov{grid-template-columns:1fr}}
+@media (max-width:1080px){.tagline{display:none}}
+@media (max-width:900px){.hero-in{grid-template-columns:1fr}.visa{display:none}.ov{grid-template-columns:1fr}}
 @media (max-width:640px){.wrap{padding:0 16px}.hero h1{font-size:34px}.hero p{font-size:17px}.hero-in{padding-top:40px;padding-bottom:44px}
   .segbar .util,.seg a:not(.on){display:none}.site-h .wrap{gap:10px;height:64px}.logo{padding-left:10px}.logo img{height:30px}.cta span{display:none}.cta{padding:0 12px}
-  .tiles{grid-template-columns:1fr}.panel{padding:22px}}
+  .panel{padding:22px}}
 
 /* launcher and preview */
 .lea-launcher{position:fixed;right:24px;bottom:24px;z-index:50;height:56px;padding:0 22px 0 18px;border:0;border-radius:999px;background:var(--brand);color:#FFFFFF;font-size:16px;font-weight:700;display:flex;align-items:center;gap:10px;cursor:pointer;box-shadow:0 8px 24px rgba(16,24,20,.22)}
@@ -293,7 +268,6 @@ body.lea-lock{overflow:hidden}
       <div>
         <h1 id="hero-t">Everyday banking,<br><span class="accent">always within reach</span></h1>
         <p id="hero-p"></p>
-        <div class="hero-actions" id="hero-actions"></div>
       </div>
       <div class="visa" aria-hidden="true">
         <div class="top"><span>BNP PARIBAS</span><span>Visa Classic</span></div>
@@ -301,13 +275,6 @@ body.lea-lock{overflow:hidden}
         <div class="pan">•••• •••• •••• 4412</div>
         <div class="bottom"><span>DEMO CARD</span><span class="brandmark">VISA</span></div>
       </div>
-    </div>
-  </section>
-  <section class="proof" aria-label="About Léa">
-    <div class="wrap proof-in">
-      <div><b>24/7</b><span>Léa answers questions day and night</span></div>
-      <div><b>3</b><span>tasks: general questions, balance, card lock</span></div>
-      <div><b>1 tap</b><span>to reach a human advisor, with a summary</span></div>
     </div>
   </section>
   <div class="wrap content">
@@ -325,13 +292,6 @@ body.lea-lock{overflow:hidden}
         <article class="ovc"><div class="k">USUAL BRANCH</div><div class="v">Paris Opéra</div><div class="s">2 Bd des Capucines, 75009 · Mon–Fri 9:00–17:30</div><span class="tag">Demo</span></article>
       </div>
     </section>
-    <h2 class="sec-title">How Léa can help</h2>
-    <div class="tiles">
-      <article class="tile mint"><div class="ic" data-icon="clock"></div><h3>Branches and hours</h3><p>Opening hours and addresses, straight from BNP Paribas’ published information.</p><button class="ask" type="button" data-ask="What are the opening hours of the Paris Opéra branch?">Ask Léa</button></article>
-      <article class="tile"><div class="ic" data-icon="file"></div><h3>Fees and products</h3><p>What a card costs, withdrawals abroad, how transfers work.</p><button class="ask" type="button" data-ask="What does a cash withdrawal outside the EU cost with my Visa Classic?">Ask Léa</button></article>
-      <article class="tile"><div class="ic" data-icon="wallet"></div><h3>Your balance</h3><p>Signed in, Léa reads your available balance from your account.</p><button class="ask" type="button" data-ask="What is my balance?" data-auth="1">Ask Léa</button></article>
-      <article class="tile green"><div class="ic" data-icon="lock"></div><h3>Lost or stolen card</h3><p>Lock your card in the chat. You confirm, and approve in your banking app.</p><button class="ask" type="button" data-ask="I lost my Visa, please lock it" data-auth="1">Lock my card</button></article>
-    </div>
   </div>
 </main>
 
@@ -831,17 +791,13 @@ body.lea-lock{overflow:hidden}
     t.classList.toggle('tag-lock', S.locked);
   }
   function syncAuthUI() {
-    var cta = $('#site-cta'), heroActions = $('#hero-actions');
+    var cta = $('#site-cta');
     cta.innerHTML = (S.auth ? I.logout + '<span>Sign out</span>' : I.lock + '<span>Access my accounts</span>');
     cta.setAttribute('aria-label', S.auth ? 'Sign out' : 'Access my accounts');
     $('#guest-panel').hidden = S.auth; $('#hello-panel').hidden = !S.auth;
     $('#hero-p').textContent = S.auth
       ? 'Welcome back, Camille. Check your balance, lock a card or find your branch: Léa is in the bottom-right corner.'
       : 'Find a branch, compare products and get answers from Léa, our AI assistant. Sign in to manage your accounts and cards.';
-    heroActions.innerHTML = '';
-    heroActions.append(S.auth ? btn('pbtn pbtn-w', I.spark + '<span>Chat with Léa</span>', openChat)
-                              : btn('pbtn pbtn-w', I.lock + '<span>Access my accounts</span>', openLoginModal));
-    heroActions.append(btn('pbtn pbtn-o', I.pin + '<span>Find a branch</span>', function () { askLea('Where is the Paris Opéra branch and when is it open?'); }));
     $('#lea-menu-signin').hidden = S.auth; $('#lea-menu-signout').hidden = !S.auth;
     input.placeholder = S.auth ? 'Ask about accounts, cards or branches' : 'Ask about branches, products or fees';
     syncPageCard();
@@ -862,7 +818,6 @@ body.lea-lock{overflow:hidden}
     S.auth = true; S.locked = false; syncAuthUI();
     resetChat(); /* a new conversation, started with the signed-in note */
     if (S.started) announce('You’re signed in as Camille');
-    if (S.after) { var q = S.after; S.after = null; askLea(q); }
   }
   function signOut() {
     S.auth = false; S.locked = false; syncAuthUI(); resetChat();
@@ -904,11 +859,6 @@ body.lea-lock{overflow:hidden}
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1500);
   }
   function talkToAdvisor() { submit('I’d like to talk to an advisor.'); }
-  function askLea(question) {
-    openChat();
-    if (S.busy) return;
-    setTimeout(function () { submit(question); }, 60);
-  }
 
   /* ---------- wiring ---------- */
   expandBtn.innerHTML = I.expand;
@@ -969,16 +919,8 @@ body.lea-lock{overflow:hidden}
   });
   $('#site-cta').addEventListener('click', function () { if (S.auth) signOut(); else openLoginModal(); });
   $('#guest-signin').addEventListener('click', openLoginModal);
-  document.querySelectorAll('.tile .ic').forEach(function (n) { n.innerHTML = I[n.dataset.icon]; });
-  document.querySelectorAll('.tile .ask').forEach(function (b) {
-    b.insertAdjacentHTML('afterbegin', I.spark);
-    b.addEventListener('click', function () {
-      if (b.dataset.auth && !S.auth) { S.after = b.dataset.ask; openLoginModal(); return; }
-      askLea(b.dataset.ask);
-    });
-  });
   $('#login-continue').addEventListener('click', signIn);
-  $('#login-cancel').addEventListener('click', function () { S.after = null; closeLoginModal(); });
+  $('#login-cancel').addEventListener('click', closeLoginModal);
   $('#login-modal').addEventListener('click', function (e) { if (e.target === $('#login-modal')) closeLoginModal(); });
   $('#login-modal').addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.preventDefault(); closeLoginModal(); } });
   syncAuthUI();
