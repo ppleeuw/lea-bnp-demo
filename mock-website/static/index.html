@@ -566,6 +566,11 @@ body.lea-lock{overflow:hidden}
     c.querySelector('.ref').textContent = r.confirmation_id;
     return c;
   }
+  function balanceText(r) {
+    return 'Balance card: ' + (r.account_type === 'savings' ? 'Savings account' : 'Current account') + ' ' + (r.account_masked || '') +
+      ', ' + r.display + ' available, as of ' + r.as_of;
+  }
+  function cardInTranscript(text) { S.transcript.push({ who: 'Léa (AI assistant)', time: time(), text: '[' + text + ']' }); }
   var AGENT_NAMES = { triage: 'Triage', faq: 'FAQ agent', account: 'Account agent', card: 'Card agent' };
   function routeNote(g, route) {
     /* demo only: which of the four Mistral agents handled this message */
@@ -623,8 +628,12 @@ body.lea-lock{overflow:hidden}
     if (data.guardrail && data.guardrail.stage === 'input') st.fail('Stopped by a safety check'); else st.done(statusText(data));
     var r = data.results || {};
     if (data.answer) say(g, mdLite(data.answer));
-    if (r.get_account_balance) g.append(balanceCard(r.get_account_balance));
-    if (r.lock_credit_card) { g.append(lockReceipt(r.lock_credit_card)); S.locked = true; syncPageCard(); }
+    /* the figures are in the cards, drawn from the tool results; the text only introduces them */
+    if (r.get_account_balance) { g.append(balanceCard(r.get_account_balance)); cardInTranscript(balanceText(r.get_account_balance)); }
+    if (r.lock_credit_card) {
+      g.append(lockReceipt(r.lock_credit_card)); S.locked = true; syncPageCard();
+      cardInTranscript('Receipt: ' + r.lock_credit_card.card_type + ' ···· ' + r.lock_credit_card.card_last4 + ' locked, reference ' + r.lock_credit_card.confirmation_id);
+    }
     if (data.pending) g.append(confirmCard(data.pending));
     sourceLink(g, data.sources);
     routeNote(g, data.route);

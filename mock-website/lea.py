@@ -41,12 +41,13 @@ MAX_TOOL_ROUNDS = 6
 
 # Added by the server to the first message of a conversation. The customer cannot set this:
 # the page only sends a signed-in flag, and typed notes like this are blocked by the guardrails.
-SIGNED_IN_NOTE = ("[Channel: authenticated banking web chat. Signed-in customer: Camille Dubois, "
+SIGNED_IN_NOTE = ("[Channel: authenticated banking web chat, which shows tool results as cards (balance, "
+                  "card-lock receipt, advisor queue). Signed-in customer: Camille Dubois, "
                   "customer_id_suffix=78421, primary card Visa Classic last4=4412. Do not ask for name, "
                   "customer ID, password, PIN or full card number.]\n\n")
-GUEST_NOTE = ("[Channel: public website chat. The visitor is NOT signed in. Do not call get_account_balance "
-              "or lock_credit_card; for balance or card actions ask them to sign in. Answer general "
-              "questions from the library.]\n\n")
+GUEST_NOTE = ("[Channel: public website chat, which shows tool results as cards. The visitor is NOT signed in. "
+              "Do not call get_account_balance or lock_credit_card; for balance or card actions ask them to "
+              "sign in. Answer general questions from the library.]\n\n")
 
 _pending: dict[str, dict[str, Any]] = {}  # card locks waiting for confirmation; production: a session store
 _client: Mistral | None = None
@@ -302,7 +303,7 @@ def _checked_answer(turn: Turn, text: str) -> dict[str, Any]:
     correction = guardrails.check_output(text, turn.results)
     reason = correction and correction["reason"]
     if "get_account_balance" in turn.results:
-        turn.event("Amount equals the tool result", "output", "fail" if reason == "amount_not_from_tool" else "pass")
+        turn.event("No amount other than the tool's", "output", "fail" if reason == "amount_not_from_tool" else "pass")
     turn.event("'Locked' only after a lock", "output", "fail" if reason == "lock_claim_without_tool" else "pass")
     if correction:
         turn.guardrail_out = reason

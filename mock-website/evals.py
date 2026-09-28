@@ -7,7 +7,8 @@ Checks on the whole conversation:
     expect_agent       the agent that must have answered the last turn: triage, faq, account or card
     expect_tools       tools that must have run successfully (document_library = the library was searched)
     forbid_tools       tools that must not have run successfully (a refused call does not count)
-    expect_pending     a tool that must be waiting for the customer's confirmation
+    expect_result      fields a tool's result must have, e.g. the balance the card shows
+    expect_pending    a tool that must be waiting for the customer's confirmation
     expect_guardrail   the guardrail that must have fired
     must_contain / must_contain_any / must_not_contain   on the last answer
 The checks fall into five layers, reported separately:
@@ -50,7 +51,7 @@ def load_cases() -> list[dict[str, Any]]:
 
 LAYERS = {
     "routing": ("expect_agent",),
-    "tools": ("expect_tools", "forbid_tools"),
+    "tools": ("expect_tools", "forbid_tools", "expect_result"),
     "confirmation": ("expect_pending",),
     "guardrails": ("expect_guardrail",),
     "answer": ("must_contain", "must_contain_any", "must_not_contain"),
@@ -86,6 +87,9 @@ def problems_for(case: dict[str, Any], responses: list[dict[str, Any]]) -> list[
         problems.append(f"expected agent {case['expect_agent']}, answered by {agent or 'none'}")
     problems += [f"expected tool did not run: {t}" for t in case.get("expect_tools", []) if t not in ran]
     problems += [f"forbidden tool ran: {t}" for t in case.get("forbid_tools", []) if t in ran]
+    for tool, fields in case.get("expect_result", {}).items():
+        result = next((r["results"][tool] for r in responses if tool in (r.get("results") or {})), {})
+        problems += [f"expected tool result {tool}.{k} = {v}, got {result.get(k)}" for k, v in fields.items() if result.get(k) != v]
     if case.get("expect_pending") and case["expect_pending"] not in pending:
         problems.append(f"expected {case['expect_pending']} to wait for confirmation")
     if case.get("expect_guardrail") and case["expect_guardrail"] not in fired:

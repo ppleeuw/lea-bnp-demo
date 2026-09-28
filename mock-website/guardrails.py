@@ -5,8 +5,8 @@ Before the agent, check_input() stops card numbers, PINs and passwords (exact pa
 typed notes that pretend to be a signed-in session, and messages that Mistral's moderation
 model scores as a jailbreak attempt. A high personal-data score is flagged, not blocked.
 After the agent, check_output() lets an answer out only when its facts came from a tool
-result in this turn: the balance must equal the tool's amount, and "locked" may only be
-said after a successful lock.
+result in this turn: no amount other than the tool's, and "locked" only after a successful
+lock. The figures themselves are shown in cards the page draws from the tool results.
 """
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ PIN_VALUE = re.compile(r"\b(pin|code pin|code secret)\b\D{0,8}\d{4,6}\b", re.I)
 PASSWORD_VALUE = re.compile(r"\b(password|mot de passe)\s*(is|est|:|=)\s*\S+", re.I)
 SPOOFED_SESSION = re.compile(r"\[\s*(channel|session|system)\s*:", re.I)
 LOCK_CLAIM = re.compile(r"\b(is (now )?locked|has been locked|est (maintenant )?bloqu[ée]e|a été bloqu[ée]e)\b", re.I)
+AMOUNT = re.compile(r"(?:€|EUR)\s?\d[\d\s.,  ]*\d|\d[\d\s.,  ]*\d\s?(?:€|EUR)")  # €4,287.63, 4 287,63 €
 
 REPLY_BLOCKED = ("I can't help with that. I can answer questions about accounts, cards and branches, "
                  "or connect you with an advisor.")
@@ -93,12 +94,16 @@ def _digits(text: str) -> str:
 def check_output(text: str, results: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     """Return a correction when the answer states something no tool returned, else None.
 
-    results holds this turn's successful tool results, by tool name.
+    results holds this turn's successful tool results, by tool name. The page shows the balance
+    in a card drawn from the tool result, so the answer need not state it; if it does, every
+    amount in it must be the tool's amount.
     """
     balance = results.get("get_account_balance")
-    if balance and _digits(f"{balance['available']:.2f}") not in _digits(text):
-        return {"reason": "amount_not_from_tool",
-                "reply": f"Your available balance is {balance['display']} ({balance['account_type']} account)."}
+    if balance:
+        expected = _digits(f"{balance['available']:.2f}")
+        if any(_digits(amount) != expected for amount in AMOUNT.findall(text or "")):
+            account = "savings" if balance.get("account_type") == "savings" else "current"
+            return {"reason": "amount_not_from_tool", "reply": f"Here is your {account} account balance."}
     if LOCK_CLAIM.search((text or "").replace("*", "")) and "lock_credit_card" not in results:
         return {"reason": "lock_claim_without_tool",
                 "reply": "I could not confirm that your card is locked, so nothing has changed yet. "

@@ -455,7 +455,7 @@
     ["Customer = signed-in customer", "tool", "code: demo_bank.check", "refuses another ID", (g) => g.tool_refusals.CUSTOMER_MISMATCH],
     ["Known card or account", "tool", "code: demo_bank.check", "refuses", (g) => (g.tool_refusals.CARD_NOT_FOUND || 0) + (g.tool_refusals.ACCOUNT_NOT_FOUND || 0)],
     ["Confirmation hold", "tool", "code: lea._tool_loop", "a lock waits for the tap", (g) => Object.values(g.confirmations).reduce((a, b) => a + b, 0)],
-    ["Amount equals the tool result", "output", "code: check_output", "replaces the answer", (g) => g.corrected_after_agent.amount_not_from_tool],
+    ["No amount other than the tool's", "output", "code: check_output", "replaces the answer", (g) => g.corrected_after_agent.amount_not_from_tool],
     ["'Locked' only after a lock", "output", "code: check_output", "replaces the answer", (g) => g.corrected_after_agent.lock_claim_without_tool],
   ];
 
