@@ -1,102 +1,110 @@
-"""BNP Léa mock retail homepage — FastAPI chat to Studio agent via lea.run_turn."""
+"""
+server.py: the web server of the demo (FastAPI, run by uvicorn on Render).
+
+Pages   /            the demo bank website with the Léa chat
+        /admin       evals and monitoring, for the admin
+API     POST /api/chat        one customer message        → lea.chat
+        POST /api/confirm     tap on the card-lock card    → lea.confirm
+        GET  /api/admin/summary, GET /api/admin/runs/{id}, POST /api/admin/runs
+        GET  /health
+
+Endpoints are plain "def", not "async def": FastAPI runs each in a worker thread, so one
+slow model call does not hold up other visitors.
+"""
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-ROOT = Path(__file__).resolve().parent
-VOICE_LIB = ROOT.parent / "voice-talk" / "lib"
-sys.path.insert(0, str(VOICE_LIB))
+import evals
+import guardrails
+import lea
+import metrics
 
-import lea  # noqa: E402
-from lea import AGENT_ID, run_turn  # noqa: E402
+STATIC = Path(__file__).resolve().parent / "static"
 
-app = FastAPI(title="BNP Léa mock website (demo)")
-app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
-
-
-def _has_api_key() -> bool:
-    if os.environ.get("MISTRAL_API_KEY"):
-        return True
-    try:
-        lea.load_api_key()
-        return True
-    except Exception:  # noqa: BLE001
-        return False
+app = FastAPI(title="BNP Léa demo")
+app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 def index():
-    return FileResponse(ROOT / "static" / "index.html")
+    return FileResponse(STATIC / "index.html")
+
+
+@app.get("/admin")
+def admin():
+    return FileResponse(STATIC / "admin.html")
 
 
 @app.get("/health")
 def health():
-    return {
-        "ok": True,
-        "agent_id": os.environ.get("MISTRAL_AGENT_ID", AGENT_ID),
-        "has_key": _has_api_key(),
-    }
+    return {"ok": True, "agent_id": lea.AGENT_ID, "agent_version": lea.AGENT_VERSION or "latest",
+            "has_key": lea.has_api_key()}
 
 
-# A plain def, not async def: FastAPI then runs each chat in a worker thread, so one slow
-# model call does not hold up every other visitor.
+def _no_key() -> JSONResponse:
+    return JSONResponse({"error": "MISTRAL_API_KEY is not set on the server.", "answer": ""}, status_code=503)
+
+
 @app.post("/api/chat")
 def chat(payload: dict):
     text = (payload.get("text") or "").strip()
-    conversation_id = payload.get("conversation_id") or None
     if not text:
-        return JSONResponse({"error": "empty text"}, status_code=400)
-    if not _has_api_key():
-        return JSONResponse(
-            {
-                "error": "MISTRAL_API_KEY manquante — chargez la clé (source ../scripts/load_mistral_env.sh) puis relancez.",
-                "assistant_text": "",
-                "reply": "",
-                "conversation_id": conversation_id,
-            },
-            status_code=503,
-        )
-    # Default to guest: banking tools only for an explicitly signed-in session.
-    authenticated = bool(payload.get("authenticated", False))
-    # Set by the page after the "Lock card" tap and the in-app approval, never by typed text.
-    confirmed_action = payload.get("confirmed_action") or None
+        return JSONResponse({"error": "empty text", "answer": ""}, status_code=400)
+    if not lea.has_api_key():
+        return _no_key()
     try:
-        result = run_turn(text, conversation_id=conversation_id, authenticated=authenticated,
-                          confirmed_action=confirmed_action)
+        return lea.chat(text, conversation_id=payload.get("conversation_id") or None,
+                        signed_in=bool(payload.get("authenticated", False)),  # default: guest
+                        masked=bool(payload.get("masked", False)))
     except Exception as e:  # noqa: BLE001
-        return JSONResponse(
-            {
-                "error": f"Erreur agent: {e}",
-                "assistant_text": "",
-                "reply": "",
-                "conversation_id": conversation_id,
-            },
-            status_code=502,
-        )
-    assistant = result.get("assistant_text") or ""
+        return JSONResponse({"error": f"agent error: {e}", "answer": ""}, status_code=502)
+
+
+@app.post("/api/confirm")
+def confirm(payload: dict):
+    if not payload.get("conversation_id"):
+        return JSONResponse({"error": "conversation_id is required", "answer": ""}, status_code=400)
+    if not lea.has_api_key():
+        return _no_key()
+    try:
+        return lea.confirm(payload["conversation_id"], approve=bool(payload.get("approve")))
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": f"agent error: {e}", "answer": ""}, status_code=502)
+
+
+@app.get("/api/admin/summary")
+def admin_summary():
     return {
-        "assistant_text": assistant,
-        "reply": assistant,
-        "conversation_id": result.get("conversation_id"),
-        "tool_trace": result.get("tool_trace") or [],
-        "sources": result.get("sources") or [],
-        "guardrail": result.get("guardrail"),
-        "trace_id": result.get("trace_id"),
+        "agent": {"id": lea.AGENT_ID, "version": lea.AGENT_VERSION or "latest", "model": "mistral-medium-latest",
+                  "moderation": guardrails.MODERATION_MODEL},
+        "prices": {"input_per_million": metrics.PRICE_INPUT * 1e6, "output_per_million": metrics.PRICE_OUTPUT * 1e6},
+        "live": metrics.summary("live"), "eval": metrics.summary("eval"),
+        "recent": metrics.recent_turns(60), "runs": metrics.runs(),
+        "thresholds": guardrails.THRESHOLDS,
     }
+
+
+@app.get("/api/admin/runs/{run_id}")
+def admin_run(run_id: str):
+    run = metrics.run(run_id)
+    return run if run else JSONResponse({"error": "unknown run"}, status_code=404)
+
+
+@app.post("/api/admin/runs")
+def admin_start_run():
+    if not lea.has_api_key():
+        return _no_key()
+    run_id, message = evals.start_in_background()
+    return JSONResponse({"run_id": run_id, "message": message}, status_code=202 if run_id else 429)
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(
-        "server:app",
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", "8766")),
-        reload=False,
-    )
+    uvicorn.run("server:app", host="0.0.0.0", port=int(os.environ.get("PORT", "8766")))

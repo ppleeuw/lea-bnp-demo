@@ -1,0 +1,14 @@
+{
+  "_note": "Standard demo data. Stands in for BNP's API gateway and core systems; nothing real is called.",
+  "customer": {"customer_id_suffix": "78421", "first_name": "Camille", "last_name": "Dubois"},
+  "as_of": "2026-09-25T12:00:00+02:00",
+  "accounts": {
+    "checking": {"available": 4287.63, "currency": "EUR", "account_masked": "···· 0078"},
+    "savings": {"available": 12500.00, "currency": "EUR", "account_masked": "···· 0192"}
+  },
+  "cards": {
+    "4412": {"type": "Visa Classic"},
+    "9088": {"type": "Visa Premier"}
+  },
+  "advisor_queue": {"queue_position": 2, "estimated_wait_minutes": 3}
+}

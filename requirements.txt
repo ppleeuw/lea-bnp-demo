@@ -1,5 +1,3 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
-python-multipart>=0.0.9
-mistralai>=1.5.0
-httpx>=0.27
+mistralai>=2.0

@@ -1,0 +1,53 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "get_account_balance",
+      "description": "Available balance of the signed-in customer's account. Only for signed-in customers; never for guests.",
+      "strict": true,
+      "parameters": {
+        "type": "object",
+        "required": ["customer_id_suffix"],
+        "properties": {
+          "account_type": {"type": "string", "enum": ["checking", "savings"], "description": "Account to query"},
+          "customer_id_suffix": {"type": "string", "description": "Last 5 digits of the signed-in customer's ID, from the channel note (demo: 78421)"}
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "lock_credit_card",
+      "description": "Lock one of the signed-in customer's cards so new purchases and cash withdrawals are declined. The app asks the customer to confirm and approve in the banking app before the lock runs; the result says locked, cancelled or not_confirmed.",
+      "strict": true,
+      "parameters": {
+        "type": "object",
+        "required": ["customer_id_suffix", "card_last4", "reason", "customer_confirmed"],
+        "properties": {
+          "reason": {"type": "string", "enum": ["lost", "stolen", "customer_request", "suspicious_activity"]},
+          "card_last4": {"type": "string", "description": "Last 4 digits of the card, e.g. 4412"},
+          "customer_confirmed": {"type": "boolean", "description": "true only if the customer already said yes to locking this card in the chat; otherwise false. The app still asks for confirmation."},
+          "customer_id_suffix": {"type": "string", "description": "Last 5 digits of the signed-in customer's ID, from the channel note (demo: 78421)"}
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "transfer_to_advisor",
+      "description": "Hand the conversation to a human advisor, with a short summary. Use when the customer asks for a person or accepts your offer of an advisor. Available to guests and signed-in customers.",
+      "strict": true,
+      "parameters": {
+        "type": "object",
+        "required": ["reason", "summary"],
+        "properties": {
+          "reason": {"type": "string", "enum": ["customer_request", "out_of_scope", "complaint", "fraud_or_dispute", "other"]},
+          "summary": {"type": "string", "description": "Two sentences for the advisor: what the customer needs and what Léa already did. No card numbers, PINs or passwords."}
+        }
+      }
+    }
+  },
+  {"type": "document_library", "library_ids": ["01a0d892-667e-76fc-9958-70d938939988"]}
+]

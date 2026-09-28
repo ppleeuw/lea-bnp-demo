@@ -324,6 +324,10 @@ body.lea-lock{overflow:hidden}
 </section>
 
 <script>
+/* Léa chat widget. Every customer message goes to our server (/api/chat), which talks to the
+   Mistral agent. The page only draws what comes back: the answer, a balance card or a receipt
+   when a tool ran, a confirmation card when a card lock waits for the customer, and the
+   advisor handoff. Sign-in and the in-app approval are simulated (demo). */
 (function () {
   'use strict';
   var $ = function (s, r) { return (r || document).querySelector(s); };
@@ -372,8 +376,8 @@ body.lea-lock{overflow:hidden}
       badge = $('#lea-badge'), preview = $('#lea-preview'), previewWho = $('#lea-preview-who'), previewText = $('#lea-preview-text'),
       previewX = $('#lea-preview-x'), footNote = $('#lea-foot-note'), announcer = $('#lea-announce');
 
-  var S = { open: false, started: false, busy: false, tok: null, gen: 0, misses: 0, mode: 'ai', unread: 0, locked: false, auth: false,
-            transcript: [], humanReplies: 0, timers: [], conversationId: null, abort: null, lastText: '' };
+  var S = { open: false, started: false, busy: false, tok: null, gen: 0, mode: 'ai', unread: 0, locked: false, auth: false,
+            transcript: [], humanReplies: 0, timers: [], conversationId: null, abort: null };
   var CANCEL = new Error('cancel');
 
   /* ---------- helpers ---------- */
@@ -385,7 +389,7 @@ body.lea-lock{overflow:hidden}
     return b;
   }
   function time() { return new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); }
-  function strip(s) { return s.replace(/<[^>]+>/g, ''); }
+  function strip(s) { return String(s || '').replace(/<[^>]+>/g, '').replace(/\*\*/g, ''); }
   function sleep(ms) {
     var tok = S.tok, total = reduceMotion ? Math.min(ms, 300) : ms, start = Date.now();
     return new Promise(function (res, rej) {
@@ -403,6 +407,18 @@ body.lea-lock{overflow:hidden}
     });
   }
   function announce(text) { announcer.textContent = ''; setTimeout(function () { announcer.textContent = text; }, 60); }
+  function mdLite(text) {
+    var escaped = String(text == null ? '' : text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return escaped.replace(/\n/g, '<br>').replace(/\*\*([^*]+)\*\*/g, '<strong class="num">$1</strong>');
+  }
+  function mask(text) {
+    var flagged = false;
+    var shown = text.replace(/(?:\d[ -]?){12,18}\d/g, function (m) { flagged = true; return '•••• ' + m.replace(/\D/g, '').slice(-4); });
+    if (/\b(pin|password|passcode|mot de passe)\b/i.test(shown) && /\b\d{4,8}\b/.test(shown)) {
+      shown = shown.replace(/\b\d{4,8}\b/g, function () { flagged = true; return '••••'; });
+    }
+    return { shown: shown, flagged: flagged };
+  }
 
   /* ---------- building blocks ---------- */
   function whoHTML(kind, when) {
@@ -415,36 +431,21 @@ body.lea-lock{overflow:hidden}
     g.append(h('div', 'who', whoHTML(g.dataset.kind, time())));
     log.append(g); reveal(g); return g;
   }
-  function typing(g) { var d = h('div', 'dots', '<span></span><span></span><span></span>'); d.setAttribute('aria-hidden', 'true'); g.append(d); reveal(g); return d; }
   function pause(g, ms) {
-    var d = typing(g);
+    var d = h('div', 'dots', '<span></span><span></span><span></span>'); d.setAttribute('aria-hidden', 'true'); g.append(d); reveal(g);
     announce(g.dataset.kind === 'human' ? 'Sophie is typing' : 'Léa is typing');
     return sleep(ms || 650).then(function () { d.remove(); });
   }
-  function say(g, html, opts) {
-    opts = opts || {};
-    var b = h('div', 'bot' + (g.dataset.kind === 'human' ? ' hum' : '')), p = h('p');
-    b.append(p); g.append(b);
-    var plain = strip(html);
-    S.transcript.push({ who: g.dataset.kind === 'human' ? 'Sophie (human advisor)' : 'Léa (AI assistant)', time: time(), text: plain });
-    if (opts.instant || reduceMotion) { p.innerHTML = html; reveal(g); return Promise.resolve(b); }
-    var words = plain.split(' '), i = 0;
-    log.setAttribute('aria-busy', 'true');
-    function step() {
-      if (i >= words.length) { p.innerHTML = html; log.setAttribute('aria-busy', 'false'); reveal(g); return Promise.resolve(b); }
-      i = Math.min(words.length, i + 2);
-      p.textContent = words.slice(0, i).join(' ');
-      reveal(g);
-      return sleep(30).then(step, function (e) { log.setAttribute('aria-busy', 'false'); throw e; });
-    }
-    return step();
+  function say(g, html) {
+    var b = h('div', 'bot' + (g.dataset.kind === 'human' ? ' hum' : ''), '<p></p>');
+    b.firstChild.innerHTML = html; g.append(b); reveal(g);
+    S.transcript.push({ who: g.dataset.kind === 'human' ? 'Sophie (human advisor)' : 'Léa (AI assistant)', time: time(), text: strip(html.replace(/<br>/g, ' ')) });
+    return b;
   }
   function status(g, text) {
     var s = h('div', 'status', I.spin + '<span></span>'); s.lastChild.textContent = text; g.append(s); reveal(g);
-    return {
-      el: s,
-      done: function (t) { s.innerHTML = I.check + '<span></span>'; s.lastChild.textContent = t; }
-    };
+    function set(icon, t, stopped) { s.classList.toggle('stopped', !!stopped); s.innerHTML = icon + '<span></span>'; s.lastChild.textContent = t; }
+    return { el: s, done: function (t) { set(I.check, t); }, fail: function (t) { set(I.xcircle, t, true); } };
   }
   function sys(text, cls) { var d = h('div', cls || 'sys'); d.textContent = text; log.append(d); reveal(d); return d; }
   function chips(g, items, label) {
@@ -452,24 +453,18 @@ body.lea-lock{overflow:hidden}
     if (label) { var l = h('div', 'lbl'); l.textContent = label; box.append(l); }
     var row = h('div', 'chips');
     items.forEach(function (it) {
-      var c = btn('chip', (it.icon ? I[it.icon] : '') + '<span></span>', function () { submit(it.label, it.run); });
+      var c = btn('chip', (it.icon ? I[it.icon] : '') + '<span></span>', function () { if (it.action) it.action(); else submit(it.label); });
       c.lastChild.textContent = it.label; row.append(c);
     });
     box.append(row); g.append(box); reveal(g); return box;
   }
   function suggestions(g, withLabel) {
-    var items = S.auth
-      ? [
-          { label: 'Check my balance', icon: 'wallet' },
-          { label: 'Lock my card', icon: 'lock' },
-          { label: 'Paris Opéra opening hours', icon: 'clock' }
-        ]
-      : [
-          { label: 'Paris Opéra hours', icon: 'clock' },
-          { label: 'What can you do?', icon: 'spark' },
-          { label: 'Sign in', icon: 'user', run: function () { return flowOpenSignIn(); } }
-        ];
-    return chips(g, items, withLabel ? 'Suggestions' : null);
+    chips(g, S.auth
+      ? [{ label: 'Check my balance', icon: 'wallet' }, { label: 'Lock my card', icon: 'lock' },
+         { label: 'Opening hours Paris Opéra', icon: 'clock' }]
+      : [{ label: 'Opening hours Lille Grand Place', icon: 'clock' }, { label: 'What can you do?', icon: 'spark' },
+         { label: 'Sign in', icon: 'user', action: openLoginModal }],
+      withLabel ? 'Suggestions' : null);
   }
   function clearFollow() { log.querySelectorAll('.follow').forEach(function (n) { n.remove(); }); }
   function disableCard(c) { c.querySelectorAll('button').forEach(function (b) { b.disabled = true; }); c.classList.add('done'); }
@@ -479,24 +474,8 @@ body.lea-lock{overflow:hidden}
     var dn = btn('ib sm', I.down, null, { 'aria-label': 'Not helpful', 'aria-pressed': 'false' });
     var cp = btn('ib sm', I.copy, null, { 'aria-label': 'Copy answer' });
     var note = h('span', 'fbnote'); note.setAttribute('role', 'status');
-    var reasons = null;
-    up.addEventListener('click', function () {
-      up.setAttribute('aria-pressed', 'true'); dn.setAttribute('aria-pressed', 'false');
-      if (reasons) { reasons.remove(); reasons = null; }
-      note.textContent = 'Thanks for your feedback';
-    });
-    dn.addEventListener('click', function () {
-      dn.setAttribute('aria-pressed', 'true'); up.setAttribute('aria-pressed', 'false'); note.textContent = '';
-      if (reasons) return;
-      reasons = h('div', 'reasons');
-      var l = h('div', 'lbl'); l.textContent = 'What went wrong?'; reasons.append(l);
-      var row = h('div', 'chips');
-      ['Wrong information', "Didn't answer my question", 'Hard to understand', 'Other'].forEach(function (t) {
-        var c = btn('chip chip-sm', '', function () { reasons.remove(); reasons = null; note.textContent = 'Thanks. This helps us improve Léa.'; });
-        c.textContent = t; row.append(c);
-      });
-      reasons.append(row); f.after(reasons); reveal(g);
-    });
+    up.addEventListener('click', function () { up.setAttribute('aria-pressed', 'true'); dn.setAttribute('aria-pressed', 'false'); note.textContent = 'Thanks for your feedback'; });
+    dn.addEventListener('click', function () { dn.setAttribute('aria-pressed', 'true'); up.setAttribute('aria-pressed', 'false'); note.textContent = 'Thanks. This helps us improve Léa.'; });
     cp.addEventListener('click', function () {
       try { if (navigator.clipboard) navigator.clipboard.writeText(text).catch(function () {}); } catch (e) {}
       note.textContent = 'Copied';
@@ -505,157 +484,162 @@ body.lea-lock{overflow:hidden}
   }
   function csat(g, question) {
     var c = h('div', 'card', '<div class="strong"></div><div class="btnrow"></div>');
-    c.firstChild.textContent = question || 'Did we solve your request?';
+    c.firstChild.textContent = question;
     function done(msg) { disableCard(c); var s = h('div', 'muted small'); s.textContent = msg; c.append(s); }
-    var y = btn('btn btn-s', 'Yes', function () { done('Thanks for letting us know.'); });
-    var n = btn('btn btn-s', 'No', function () {
-      done('Sorry about that.');
-      var g2 = group(); say(g2, 'Would you like to talk to an advisor?', { instant: true });
-      chips(g2, [{ label: 'Talk to an advisor', icon: 'headset' }]);
+    c.querySelector('.btnrow').append(btn('btn btn-s', 'Yes', function () { done('Thanks for letting us know.'); }),
+                                       btn('btn btn-s', 'No', function () { done('Sorry about that.'); }));
+    g.append(c); reveal(g);
+  }
+
+  /* ---------- cards drawn from tool results ---------- */
+  function balanceCard(r) {
+    var c = h('div', 'card',
+      '<div class="row"><span class="strong"><span class="acc"></span> <span class="muted num" style="font-weight:400"></span></span></div>' +
+      '<div class="col" style="gap:2px"><span class="num big" data-amt></span><span class="muted small">Available now</span></div>' +
+      '<div class="muted small asof"></div>');
+    c.querySelector('.acc').textContent = r.account_type === 'savings' ? 'Savings account' : 'Current account';
+    c.querySelector('.strong .num').textContent = r.account_masked || '';
+    var amt = c.querySelector('[data-amt]'); amt.textContent = r.display; amt.dataset.amt = r.display;
+    var when = new Date(r.as_of);
+    c.querySelector('.asof').textContent = 'Balance as of ' + (isNaN(when) ? r.as_of : when.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }));
+    var hide = btn('ib sm', I.eyeoff, null, { 'aria-label': 'Hide amounts', 'aria-pressed': 'false' });
+    hide.style.margin = '-6px -6px -6px 0';
+    hide.addEventListener('click', function () {
+      var on = hide.getAttribute('aria-pressed') !== 'true';
+      hide.setAttribute('aria-pressed', String(on)); hide.innerHTML = on ? I.eye : I.eyeoff;
+      amt.textContent = on ? '€ ••••' : amt.dataset.amt;
     });
-    c.querySelector('.btnrow').append(y, n); g.append(c); reveal(g); return c;
+    c.querySelector('.row').append(hide);
+    return c;
   }
-  function mask(text) {
-    var flagged = false;
-    var shown = text.replace(/(?:\d[ -]?){12,18}\d/g, function (m) { flagged = true; return '•••• ' + m.replace(/\D/g, '').slice(-4); });
-    if (/\b(pin|password|passcode|mot de passe)\b/i.test(shown)) {
-      shown = shown.replace(/\b\d{4,8}\b/g, function () { flagged = true; return '••••'; });
-    }
-    return { shown: shown, flagged: flagged };
+  function confirmCard(p) {
+    var c = h('div', 'card pend',
+      '<div class="cardhead"><div class="tint">' + I.card + '</div><div class="col"><span class="strong ctype"></span><span class="muted small num cnum"></span></div></div>' +
+      '<div class="title">Lock this card?</div>' +
+      '<ul class="list"><li>' + I.xcircleWarn + '<span>Payments and withdrawals will be declined</span></li>' +
+      '<li>' + I.tickOk + '<span>Transfers and direct debits keep working</span></li>' +
+      '<li>' + I.unlockOk + '<span>Unlock later in your banking app or with an advisor</span></li></ul>' +
+      '<div class="btnrow"></div>' +
+      '<div class="muted small note">' + I.phone + '<span>You’ll approve this in your banking app</span></div>');
+    c.querySelector('.ctype').textContent = p.card_type;
+    c.querySelector('.cnum').textContent = '···· ' + p.card_last4 + ' · Active';
+    c.querySelector('.btnrow').append(
+      btn('btn btn-p', I.lock + '<span>Lock card</span>', function () { if (S.busy) return; disableCard(c); submitAction('Lock card', function () { return decideLock(true); }); }),
+      btn('btn btn-s', 'Keep card active', function () { if (S.busy) return; disableCard(c); submitAction('Keep card active', function () { return decideLock(false); }); }));
+    return c;
+  }
+  function lockReceipt(r) {
+    var c = h('div', 'card',
+      '<div class="cardhead"><div class="tint">' + I.lock + '</div><div class="col grow"><span class="strong">Card locked</span><span class="muted small num cnum"></span></div><span class="pill ok">Locked</span></div>' +
+      '<div class="rule"></div><div class="row"><span class="muted">When</span><span class="when"></span></div>' +
+      '<div class="row"><span class="muted">Reference</span><span class="num ref"></span></div>');
+    c.querySelector('.cnum').textContent = r.card_type + ' ···· ' + r.card_last4;
+    c.querySelector('.when').textContent = 'Today, ' + time();
+    c.querySelector('.ref').textContent = r.confirmation_id;
+    return c;
+  }
+  function sourceLink(g, sources) {
+    if (!sources || !sources.length) return;
+    var a = h('a', 'link', I.file + '<span></span>'); a.href = '#';
+    a.lastChild.textContent = 'Source: ' + sources.join(', ');
+    g.append(a);
   }
 
-
-  /* ---------- live API (hybrid) ---------- */
-  function mdLite(text) {
-    var escaped = String(text == null ? '' : text)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return escaped.replace(/\n/g, '<br>').replace(/\*\*([^*]+)\*\*/g, '<strong class="num">$1</strong>');
-  }
+  /* ---------- talking to our server ---------- */
   function watchCancel(ac) {
     return new Promise(function (_, rej) {
       (function tick() {
-        if (S.tok && S.tok.cancelled) {
-          try { ac.abort(); } catch (e) {}
-          rej(CANCEL);
-          return;
-        }
+        if (S.tok && S.tok.cancelled) { try { ac.abort(); } catch (e) {} rej(CANCEL); return; }
         setTimeout(tick, 80);
       })();
     });
   }
-  function apiChat(text, extra) {
-    var ac = new AbortController();
-    S.abort = ac;
-    var body = { text: text, conversation_id: S.conversationId, authenticated: !!S.auth };
-    if (extra) Object.keys(extra).forEach(function (k) { body[k] = extra[k]; });
-    var fetchP = fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: ac.signal
-    }).then(function (res) {
-      return res.json().catch(function () { return {}; }).then(function (data) {
-        data._httpOk = res.ok;
-        data._status = res.status;
-        return data;
-      });
-    });
-    return Promise.race([fetchP, watchCancel(ac)]).then(function (data) {
+  function post(path, body) {
+    var ac = new AbortController(); S.abort = ac;
+    var req = fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: ac.signal })
+      .then(function (res) { return res.json().catch(function () { return { error: 'bad response' }; }); });
+    return Promise.race([req, watchCancel(ac)]).then(function (data) {
       S.abort = null;
       if (data && data.conversation_id) S.conversationId = data.conversation_id;
       return data;
     }, function (err) {
       S.abort = null;
-      if (err === CANCEL || (err && err.name === 'AbortError')) throw CANCEL;
-      throw err;
+      throw (err === CANCEL || (err && err.name === 'AbortError')) ? CANCEL : err;
     });
   }
-  function toolResult(trace, name) {
-    if (!trace || !trace.length) return null;
-    for (var i = 0; i < trace.length; i++) {
-      var t = trace[i];
-      var n = t.name || t.tool || t.function || (t.tool_call && t.tool_call.name) || '';
-      if (String(n).indexOf(name) !== -1) {
-        var r = t.result || t.output || t.content || t.response || t;
-        if (typeof r === 'string') {
-          try { return JSON.parse(r); } catch (e) { return { raw: r }; }
-        }
-        return r;
-      }
+  function statusText(data) {
+    var ran = function (name, state) { return (data.tools || []).some(function (t) { return t.name === name && (state ? t.status === state : t.ok); }); };
+    if (data.pending) return 'Prepared the card lock';
+    if (ran('lock_credit_card')) return 'Card lock confirmed';
+    if (ran('lock_credit_card', 'cancelled')) return 'Nothing was changed';
+    if (ran('get_account_balance')) return 'Checked your account';
+    if (ran('transfer_to_advisor')) return 'Contacted an advisor';
+    if (ran('document_library')) return 'Searched BNP Paribas information';
+    return 'Ready';
+  }
+  function show(g, st, data) {
+    if (!data || data.error) {
+      st.fail('Could not reach Léa');
+      say(g, 'Sorry, I could not reach the assistant right now. Please try again or talk to an advisor.');
+      chips(g, [{ label: 'Talk to an advisor', icon: 'headset' }]);
+      return;
     }
-    return null;
-  }
-  function extractBalance(data) {
-    var tr = (data && data.tool_trace) || [];
-    var bal = toolResult(tr, 'balance') || toolResult(tr, 'get_account');
-    if (bal) {
-      if (bal.display) return String(bal.display);
-      if (bal.available != null) {
-        var n = Number(bal.available);
-        if (!isNaN(n)) return '€' + n.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      }
-    }
-    var text = (data && (data.assistant_text || data.reply)) || '';
-    var m = text.match(/€\s?[\d.,]+/);
-    return m ? m[0].replace(/\s/g, '') : null;
-  }
-  function extractLockRef(data) {
-    var tr = (data && data.tool_trace) || [];
-    var lock = toolResult(tr, 'lock') || toolResult(tr, 'card');
-    if (lock) {
-      if (lock.confirmation_id) return String(lock.confirmation_id);
-      if (lock.reference) return String(lock.reference);
-      if (lock.confirmation) return String(lock.confirmation);
-    }
-    var text = (data && (data.assistant_text || data.reply)) || '';
-    var m = text.match(/LCK-[A-Z0-9-]+/i);
-    return m ? m[0] : null;
-  }
-  function sourceLink(g, data) {
-    var s = (data && data.sources) || [];
-    if (!s.length) return;
-    var a = h('a', 'link', I.file + '<span></span>'); a.href = '#';
-    a.lastChild.textContent = 'Source: ' + s.join(', ');
-    g.append(a);
-  }
-  function followUpsFromContext(g) {
-    var items = S.auth
-      ? [
-          { label: 'Check my balance', icon: 'wallet' },
-          { label: 'Lock my card', icon: 'lock' },
-          { label: 'Paris Opéra opening hours', icon: 'clock' }
-        ]
-      : [
-          { label: 'Paris Opéra hours', icon: 'clock' },
-          { label: 'What can you do?', icon: 'spark' },
-          { label: 'Sign in', icon: 'user', run: function () { return flowOpenSignIn(); } }
-        ];
-    chips(g, items);
-  }
-  function flowLive(question, statusText, doneText) {
-    S.misses = 0;
-    var g = group();
-    var st = status(g, statusText || 'Léa is thinking…');
-    return apiChat(question).then(function (data) {
-      if (data.error && !(data.assistant_text || data.reply)) {
-        st.el.classList.add('stopped');
-        st.el.innerHTML = I.xcircle + '<span></span>';
-        st.el.lastChild.textContent = 'Could not reach Léa';
-        return say(g, 'Sorry, I could not reach the assistant right now. Please try again or talk to an advisor.', { instant: true })
-          .then(function () { chips(g, [{ label: 'Talk to an advisor', icon: 'headset' }]); });
-      }
-      st.done(doneText || 'Done');
-      var reply = data.assistant_text || data.reply || 'Done.';
-      var html = mdLite(reply);
-      return say(g, html, { instant: true }).then(function () {
-        sourceLink(g, data);
-        feedback(g, strip(html.replace(/<br>/g, ' ')));
-        followUpsFromContext(g);
-      });
-    });
+    if (data.guardrail && data.guardrail.stage === 'input') st.fail('Stopped by a safety check'); else st.done(statusText(data));
+    var r = data.results || {};
+    if (data.answer) say(g, mdLite(data.answer));
+    if (r.get_account_balance) g.append(balanceCard(r.get_account_balance));
+    if (r.lock_credit_card) { g.append(lockReceipt(r.lock_credit_card)); S.locked = true; syncPageCard(); }
+    if (data.pending) g.append(confirmCard(data.pending));
+    sourceLink(g, data.sources);
+    if (data.answer) feedback(g, strip(data.answer));
+    reveal(g);
+    if (r.transfer_to_advisor) { startHandoff(g, r.transfer_to_advisor, handoffSummary(data)); return; }
+    if (!data.pending) suggestions(g);
   }
 
-  /* ---------- turn handling ---------- */
+  /* ---------- turns ---------- */
+  function ask(text, masked) {
+    var g = group(), st = status(g, 'Léa is thinking…');
+    return post('/api/chat', { text: text, conversation_id: S.conversationId, authenticated: !!S.auth, masked: !!masked })
+      .then(function (data) { show(g, st, data); });
+  }
+  function decideLock(approve) {
+    var g = group();
+    return (approve ? sca(g, 'lock your card') : Promise.resolve()).then(function () {
+      var st = status(g, approve ? 'Locking your card…' : 'Keeping your card active…');
+      return post('/api/confirm', { conversation_id: S.conversationId, approve: approve }).then(function (data) { show(g, st, data); });
+    });
+  }
+  function sca(g, what) {
+    /* simulated strong customer authentication: in production the banking app approves the request */
+    var c = h('div', 'card sca',
+      '<div class="cardhead"><div class="tint">' + I.phone + '</div><div class="col grow"><span class="strong">Approve in your banking app</span><span class="muted small"></span></div></div>' +
+      '<div class="status">' + I.spin + '<span>Waiting for your approval…</span></div>');
+    c.querySelector('.muted.small').textContent = 'We sent a request to your phone to ' + what + '.';
+    var cancel = btn('btn btn-s', 'Cancel request', function () { if (S.tok) S.tok.cancelled = true; });
+    cancel.style.minHeight = '40px';
+    c.append(cancel); g.append(c); reveal(g);
+    announce('Approve the request in your banking app');
+    return sleep(2600).then(function () { c.remove(); status(g, '').done('Approved in your banking app'); });
+  }
+  function userBubble(text) {
+    var m = h('div', 'me'); m.textContent = text; log.append(m);
+    var t = h('div', 'metime'); t.textContent = time(); log.append(t);
+    S.transcript.push({ who: 'You', time: time(), text: text });
+    reveal(t);
+  }
+  function submit(text) {
+    if (S.busy) return;
+    text = (text || '').trim(); if (!text) return;
+    var m = mask(text); /* card numbers and codes never leave the page */
+    clearFollow();
+    log.querySelectorAll('.card.pend:not(.done)').forEach(disableCard);
+    userBubble(m.shown);
+    if (S.mode === 'human') exec(flowHuman);
+    else if (S.mode === 'queue') exec(function () { sys('The advisor will see your message when they join.'); });
+    else exec(function () { return ask(m.shown, m.flagged); });
+  }
+  function submitAction(label, fn) { if (S.busy) return; clearFollow(); userBubble(label); exec(fn); }
   function setSendMode() {
     if (S.busy) {
       sendBtn.disabled = false; sendBtn.classList.add('stop'); sendBtn.innerHTML = I.stop; sendBtn.setAttribute('aria-label', 'Stop response');
@@ -664,29 +648,10 @@ body.lea-lock{overflow:hidden}
       sendBtn.disabled = !input.value.trim();
     }
   }
-  function userBubble(text) {
-    var m = h('div', 'me'); m.textContent = text; log.append(m);
-    var t = h('div', 'metime'); t.textContent = time(); log.append(t);
-    S.transcript.push({ who: 'You', time: time(), text: text });
-    reveal(t);
-  }
-  function submit(text, handler) {
-    if (S.busy) return;
-    text = (text || '').trim(); if (!text) return;
-    var m = mask(text);
-    clearFollow();
-    userBubble(m.shown);
-    S.lastText = m.shown;
-    exec(handler || route(text, m.flagged));
-  }
   function markStopped() {
     log.querySelectorAll('.dots').forEach(function (d) { d.remove(); });
-    log.querySelectorAll('.sca').forEach(function (c) {
-      var s = h('div', 'status stopped', I.xcircle + '<span>Request cancelled. Nothing was changed.</span>'); c.replaceWith(s);
-    });
-    log.querySelectorAll('.status .spin').forEach(function (svg) {
-      var s = svg.closest('.status'); s.classList.add('stopped'); s.innerHTML = I.xcircle + '<span>Stopped</span>';
-    });
+    log.querySelectorAll('.sca').forEach(function (c) { c.replaceWith(h('div', 'status stopped', I.xcircle + '<span>Request cancelled. Nothing was changed.</span>')); });
+    log.querySelectorAll('.status .spin').forEach(function (svg) { var s = svg.closest('.status'); s.classList.add('stopped'); s.innerHTML = I.xcircle + '<span>Stopped</span>'; });
   }
   function exec(flow) {
     var gen = S.gen;
@@ -695,7 +660,7 @@ body.lea-lock{overflow:hidden}
       if (gen !== S.gen) return;
       if (e === CANCEL) { markStopped(); sys('You stopped the response.'); return; }
       console.error(e);
-      var g = group(); say(g, 'Sorry, something went wrong on my side. Please try again or talk to an advisor.', { instant: true });
+      var g = group(); say(g, 'Sorry, something went wrong on my side. Please try again or talk to an advisor.');
       chips(g, [{ label: 'Talk to an advisor', icon: 'headset' }]);
     }).then(function () {
       if (gen !== S.gen) return;
@@ -703,387 +668,64 @@ body.lea-lock{overflow:hidden}
     });
   }
 
-  /* ---------- router ---------- */
-  function route(text, flagged) {
-    if (flagged) return flowSensitive;
-    if (S.mode === 'human') return flowHuman;
-    if (S.mode === 'queue') return flowQueued;
-    var s = text.toLowerCase();
-    if (/^(sign[- ]?in|log[- ]?in|client area)\b/.test(s) || s === 'sign in') return flowOpenSignIn;
-    if (/(advis|human|person|agent|someone|conseill|talk to)/.test(s)) return flowHandoff;
-    if (/\brates?\b|taux/.test(s)) return flowRates;
-    if (/(mortgage|loan|invest|pension|insurance|credit|crédit|prêt|advice)/.test(s)) return flowOutOfScope;
-    if (/(unlock|reactivat|débloqu)/.test(s)) return S.auth ? flowUnlock : flowNeedSignIn;
-    if (/(replace|replacement|new card|stolen|steal|fraud|\bvol)/.test(s)) return S.auth ? flowReplace : flowNeedSignIn;
-    if (/\b(lock|locked|block|blocked|lost|lose|freeze|frozen)\b|can.?t find|cannot find|missing|bloqu|perdu/.test(s)) return S.auth ? flowLock : flowNeedSignIn;
-    if (/(alert|notif)/.test(s)) return S.auth ? flowAlert : flowNeedSignIn;
-    if (/(pending|transaction|payment|spent|spending)/.test(s)) return S.auth ? flowPending : flowNeedSignIn;
-    if (/(balance|how much|solde|money|funds|in my account)/.test(s)) return S.auth ? flowBalance : flowNeedSignIn;
-    if (/(appointment|book|rendez|meeting|slot)/.test(s)) return flowBook;
-    if (/(hour|open|opening|clos|branch|agence|horaire|op[ée]ra|address|where)/.test(s)) return flowBranch;
-    if (/(thank|merci|that[’']?s all|bye|no more)/.test(s)) return flowThanks;
-    if (/(what can you do|show what|help|options|menu)/.test(s)) return flowCaps;
-    if (/^(hi|hello|hey|bonjour|salut|good (morning|afternoon|evening))\b/.test(s)) return flowHello;
-    return flowFallback;
-  }
-
-  /* ---------- flows ---------- */
+  /* ---------- welcome ---------- */
   function welcome() {
     sys('Today', 'day');
-    var s = h('div', 'sys', 'You’re chatting with Léa, an AI assistant.'); log.append(s);
-    var g = group();
-    var b;
+    log.append(h('div', 'sys', 'You’re chatting with Léa, an AI assistant.'));
+    var g = group(), b;
     if (S.auth) {
-      b = h('div', 'bot', '<p>Hi Camille, I’m Léa, BNP Paribas’ AI assistant.</p><p>I can check your balance, lock a card and answer branch questions. For anything else, I’ll connect you with an advisor.</p>');
-      g.append(b);
-      S.transcript.push({ who: 'Léa (AI assistant)', time: time(), text: strip(b.innerHTML.replace('</p><p>', ' ')) });
-      g.append(h('div', 'sec', I.shield + '<span>You’re signed in, so I won’t ask for your details. I will never ask for your password, PIN or full card number.</span>'));
+      b = h('div', 'bot', '<p>Hi Camille, I’m Léa, BNP Paribas’ AI assistant.</p><p>I can check your balance, lock a card and answer questions about branches and products. For anything else, I’ll connect you with an advisor.</p>');
+      g.append(b, h('div', 'sec', I.shield + '<span>You’re signed in, so I won’t ask for your details. I will never ask for your password, PIN or full card number.</span>'));
     } else {
-      b = h('div', 'bot', '<p>Hi, I’m Léa, BNP Paribas’ AI assistant.</p><p>I can answer general questions and branch opening hours. To check a balance or lock a card, please sign in.</p>');
-      g.append(b);
-      S.transcript.push({ who: 'Léa (AI assistant)', time: time(), text: strip(b.innerHTML.replace('</p><p>', ' ')) });
-      g.append(h('div', 'sec', I.shield + '<span>I’m an AI assistant. I will never ask for your password, PIN or full card number.</span>'));
+      b = h('div', 'bot', '<p>Hi, I’m Léa, BNP Paribas’ AI assistant.</p><p>I can answer questions about branches, opening hours, products and fees. To check a balance or lock a card, please sign in.</p>');
+      g.append(b, h('div', 'sec', I.shield + '<span>I’m an AI assistant. I will never ask for your password, PIN or full card number.</span>'));
     }
+    S.transcript.push({ who: 'Léa (AI assistant)', time: time(), text: strip(b.innerHTML.replace('</p><p>', ' ')) });
     suggestions(g, true);
   }
-  function flowNeedSignIn() {
-    var g = group();
-    return pause(g, 300).then(function () {
-      return say(g, 'To check your balance or manage a card, please sign in to your client area.');
-    }).then(function () {
-      chips(g, [
-        { label: 'Sign in', icon: 'user', run: function () { return flowOpenSignIn(); } },
-        { label: 'Paris Opéra hours', icon: 'clock' }
-      ]);
-    });
-  }
-  function flowOpenSignIn() {
-    openLoginModal();
-    return Promise.resolve();
-  }
-  function flowCapsGuestLocal() {
-    var g = group();
-    return pause(g, 350).then(function () {
-      return say(g, 'I can answer general questions and branch opening hours. Balance and card actions need you to sign in first.');
-    }).then(function () { suggestions(g, true); });
-  }
-  function flowHello() {
-    if (!S.auth) {
-      var g = group();
-      return pause(g, 300).then(function () {
-        return say(g, 'Hi — I can help with branch hours and general questions. Sign in if you need balance or card help.');
-      }).then(function () { suggestions(g); });
-    }
-    return flowLive(S.lastText || 'Hello', 'Léa is thinking…', 'Ready');
-  }
-  function flowCaps() {
-    if (!S.auth) return flowCapsGuestLocal();
-    return flowLive(S.lastText || 'What can you help me with?', 'Léa is thinking…', 'Ready');
-  }
-  function flowSensitive() {
-    var g = group();
-    return pause(g, 300).then(function () { return say(g, 'For your security, I hid what looked like a card number or code. Never share your PIN, passwords or full card number in a chat, including this one.'); });
-  }
-  function flowBalance() {
-    S.misses = 0; var g = group(), st = status(g, 'Checking your current account…');
-    return apiChat('What is my available balance on my current account?').then(function (data) {
-      if (data.error && !(data.assistant_text || data.reply)) {
-        st.el.classList.add('stopped');
-        st.el.innerHTML = I.xcircle + '<span></span>';
-        st.el.lastChild.textContent = 'Could not reach Léa';
-        return say(g, 'Sorry, I could not check your balance right now. Please try again or talk to an advisor.', { instant: true })
-          .then(function () { chips(g, [{ label: 'Talk to an advisor', icon: 'headset' }]); });
-      }
-      /* the balance card is shown only when the balance tool really ran: no amount from the page itself */
-      var bal = toolResult(data.tool_trace, 'get_account_balance');
-      var amt = bal && !bal.error ? extractBalance(data) : null;
-      st.done(amt ? 'Checked your current account' : 'Balance not checked');
-      var reply = data.assistant_text || data.reply || 'Sorry, I could not check your balance right now.';
-      var html = mdLite(reply);
-      return say(g, html, { instant: true }).then(function () {
-        if (amt) { g.append(balanceCard(amt)); reveal(g); }
-        feedback(g, strip(html.replace(/<br>/g, ' ')));
-        chips(g, amt ? [{ label: 'Lock my card', icon: 'lock' }, { label: 'Low-balance alert' }]
-                     : [{ label: 'Talk to an advisor', icon: 'headset' }]);
-      });
-    });
-  }
-  function balanceCard(available) {
-    var booked = available;
-    var pending = '€0.00';
-    var c = h('div', 'card',
-      '<div class="row"><span class="strong">Current account <span class="muted num" style="font-weight:400">···· 0078</span></span></div>' +
-      '<div class="col" style="gap:2px"><span class="num big" data-amt="' + available + '">' + available + '</span><span class="muted small">Available now</span></div>' +
-      '<div class="rule"></div>' +
-      '<div class="row"><span class="muted">Booked balance</span><span class="num" data-amt="' + booked + '">' + booked + '</span></div>' +
-      '<div class="row"><span class="muted">Pending card payments</span><span class="num" data-amt="' + pending + '">' + pending + '</span></div>' +
-      '<div class="muted small">Updated today at ' + time() + '</div>');
-    var hide = btn('ib sm', I.eyeoff, null, { 'aria-label': 'Hide amounts', 'aria-pressed': 'false' });
-    hide.style.margin = '-6px -6px -6px 0';
-    hide.addEventListener('click', function () {
-      var on = hide.getAttribute('aria-pressed') !== 'true';
-      hide.setAttribute('aria-pressed', String(on)); hide.innerHTML = on ? I.eye : I.eyeoff;
-      c.querySelectorAll('[data-amt]').forEach(function (s) { s.textContent = on ? '€ ••••' : s.dataset.amt; });
-    });
-    c.querySelector('.row').append(hide);
-    return c;
-  }
-  function flowPending() {
-    /* transactions are out of scope for this prototype: the agent says so and offers an advisor */
-    return flowLive(S.lastText || 'Show my pending card payments', 'Léa is thinking…', 'Ready');
-  }
-  function flowAlert() {
-    S.misses = 0; var g = group();
-    return pause(g).then(function () {
-      return say(g, 'I can’t change alert settings from the chat yet. You can set a low-balance alert in the app, under Notifications.');
-    }).then(function () {
-      var a = h('a', 'link', I.ext + '<span>Open notification settings</span>'); a.href = '#'; g.append(a);
-      feedback(g, 'Set a low-balance alert in the app, under Notifications.');
-    });
-  }
-  function flowLock() {
-    S.misses = 0; var g = group();
-    if (S.locked) {
-      return pause(g).then(function () { return say(g, 'Your Visa Classic ending 4412 is already locked.'); })
-        .then(function () { chips(g, [{ label: 'Unlock card', icon: 'unlock' }, { label: 'Block and replace card' }]); });
-    }
-    var st = status(g, 'Finding your cards…');
-    return sleep(800).then(function () {
-      st.done('Found your Visa Classic ···· 4412');
-      return say(g, 'I can lock it now. Locking is temporary, so you can unlock it if the card turns up.');
-    }).then(function () {
-      var c = h('div', 'card',
-        '<div class="cardhead"><div class="tint">' + I.card + '</div><div class="col"><span class="strong">Visa Classic</span><span class="muted small num">···· 4412 · Active</span></div></div>' +
-        '<div class="title">Lock this card?</div>' +
-        '<ul class="list"><li>' + I.xcircleWarn + '<span>Payments and withdrawals will be declined</span></li>' +
-        '<li>' + I.tickOk + '<span>Transfers and direct debits keep working</span></li>' +
-        '<li>' + I.unlockOk + '<span>Unlock anytime, here or in your banking app</span></li></ul>' +
-        '<div class="btnrow"></div>' +
-        '<div class="muted small note">' + I.phone + '<span>You’ll approve this in your banking app</span></div>');
-      var yes = btn('btn btn-p', I.lock + '<span>Lock card</span>', function () { if (S.busy) return; disableCard(c); submit('Lock card', flowLockApprove); });
-      var no = btn('btn btn-s', 'Keep card active', function () { if (S.busy) return; disableCard(c); submit('Keep card active', flowKeep); });
-      c.querySelector('.btnrow').append(yes, no);
-      g.append(c);
-      var stolen = btn('linkbtn', 'Card stolen? Block it and order a new one', function () { if (S.busy) return; disableCard(c); submit('Block and replace card'); });
-      g.append(stolen); reveal(g);
-    });
-  }
-  function sca(g, what) {
-    var c = h('div', 'card sca',
-      '<div class="cardhead"><div class="tint">' + I.phone + '</div><div class="col grow"><span class="strong">Approve in your banking app</span><span class="muted small">We sent a request to your phone to ' + what + '.</span></div></div>' +
-      '<div class="status">' + I.spin + '<span>Waiting for your approval…</span></div>');
-    var cancel = btn('btn btn-s', 'Cancel request', function () { if (S.tok) S.tok.cancelled = true; });
-    cancel.style.minHeight = '40px';
-    c.append(cancel); g.append(c); reveal(g);
-    announce('Approve the request in your banking app');
-    return sleep(2600).then(function () {
-      c.remove();
-      var st = status(g, ''); st.done('Approved in your banking app');
-    });
-  }
-  function flowLockApprove() {
-    var g = group();
-    return sca(g, 'lock your card').then(function () {
-      var st = status(g, 'Locking your card…');
-      /* the customer tapped "Lock card" and approved in the app: send their explicit yes, and tell
-         the server this confirmation came from the tap (confirmed_action), not from typed text */
-      return apiChat('Yes, I confirm: please lock my Visa Classic ending 4412. Reason: lost. I approved this in my banking app.',
-                     { confirmed_action: 'lock_credit_card' }).then(function (data) {
-        var lock = toolResult(data.tool_trace, 'lock_credit_card');
-        var reply = data.assistant_text || data.reply || '';
-        if (!lock || lock.error || lock.status !== 'locked') {
-          /* no receipt without a successful tool result */
-          st.el.classList.add('stopped'); st.el.innerHTML = I.xcircle + '<span></span>';
-          st.el.lastChild.textContent = 'Card not locked';
-          return say(g, mdLite(reply || 'I could not lock your card, so nothing has changed. Please try again or talk to an advisor.'), { instant: true })
-            .then(function () { chips(g, [{ label: 'Lock my card', icon: 'lock' }, { label: 'Talk to an advisor', icon: 'headset' }]); });
-        }
-        var ref = extractLockRef(data);
-        st.done('Card lock confirmed');
-        S.locked = true; syncPageCard();
-        reply = reply || 'Done, your card ending 4412 is locked. If it was stolen, I can block it for good and order a new one.';
-        return say(g, mdLite(reply), { instant: true }).then(function () {
-          var c = h('div', 'card',
-            '<div class="cardhead"><div class="tint">' + I.lock + '</div><div class="col grow"><span class="strong">Card locked</span><span class="muted small num">Visa Classic ···· 4412</span></div><span class="pill ok">Locked</span></div>' +
-            '<div class="rule"></div>' +
-            '<div class="row"><span class="muted">When</span><span>Today, ' + time() + '</span></div>' +
-            '<div class="row"><span class="muted">Reference</span><span class="num">' + ref + '</span></div>');
-          var u = btn('btn btn-s wide', I.unlock + '<span>Unlock card</span>', function () { if (S.busy || !S.locked) return; u.disabled = true; submit('Unlock card', flowUnlock); });
-          c.append(u); g.append(c); reveal(g);
-          feedback(g, 'Your card ending 4412 is locked. Reference ' + ref + '.');
-          chips(g, [{ label: 'Block and replace card' }, { label: 'That’s all, thanks' }]);
-        });
-      });
-    });
-  }
-  function flowKeep() {
-    var g = group();
-    return pause(g).then(function () { return say(g, 'No problem, your card stays active. If you still can’t find it later, just ask me to lock it.'); })
-      .then(function () { chips(g, [{ label: 'That’s all, thanks' }]); });
-  }
-  function flowUnlock() {
-    S.misses = 0; var g = group();
-    if (!S.locked) return pause(g).then(function () { return say(g, 'Your Visa Classic ending 4412 is already active.'); });
-    return sca(g, 'unlock your card').then(function () {
-      S.locked = false; syncPageCard();
-      return say(g, 'Your Visa Classic ending 4412 is active again.');
-    }).then(function () {
-      feedback(g, 'Your Visa Classic ending 4412 is active again.');
-      chips(g, [{ label: 'That’s all, thanks' }]);
-    });
-  }
-  function flowReplace() {
-    S.misses = 0; var g = group();
-    return pause(g).then(function () {
-      return say(g, S.locked
-        ? 'Blocking a card is permanent, so an advisor will do this with you. Your card stays locked while you wait.'
-        : 'Blocking a card is permanent, so an advisor will do this with you. I can lock it right away while you wait.');
-    }).then(function () {
-      chips(g, S.locked ? [{ label: 'Talk to an advisor', icon: 'headset' }]
-                        : [{ label: 'Lock my card', icon: 'lock' }, { label: 'Talk to an advisor', icon: 'headset' }]);
-    });
-  }
-  function flowBranch() {
-    /* branch hours and addresses come from the agent's document library (RAG), for any branch */
-    return flowLive(S.lastText || 'What are the opening hours of the Paris Opéra branch?', 'Searching branch information…', 'Checked branch information');
-  }
-  function nextSlots() {
-    var d = new Date(), tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
-    do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6);
-    var label = d.toDateString() === tomorrow.toDateString() ? 'Tomorrow' : d.toLocaleDateString('en-GB', { weekday: 'long' });
-    return ['9:30', '11:00', '14:30'].map(function (t) { return label + ', ' + t; });
-  }
-  function flowBook() {
-    S.misses = 0; var g = group(), st = status(g, 'Checking available appointments…');
-    return sleep(1000).then(function () {
-      st.done('Found 3 free slots at Paris Opéra');
-      return say(g, 'Here are the next free slots with an advisor at Paris Opéra.');
-    }).then(function () {
-      chips(g, nextSlots().map(function (s) { return { label: s, icon: 'cal', run: function () { return flowBooked(s); } }; }));
-    });
-  }
-  function flowBooked(slot) {
-    var g = group(), st = status(g, 'Booking your appointment…');
-    return sleep(900).then(function () {
-      st.done('Appointment booked');
-      return say(g, 'You’re booked. The details are also in your app.');
-    }).then(function () {
-      var c = h('div', 'card',
-        '<div class="cardhead"><div class="tint">' + I.cal + '</div><div class="col grow"><span class="strong">Appointment booked</span><span class="muted small">Paris Opéra · with an advisor</span></div><span class="pill ok">Booked</span></div>' +
-        '<div class="rule"></div><div class="row"><span class="muted">When</span><span></span></div>' +
-        '<div class="row"><span class="muted">Where</span><span>2 Bd des Capucines</span></div>' +
-        '<a class="link" href="#">Change or cancel</a>');
-      c.querySelectorAll('.row')[0].lastChild.textContent = slot;
-      g.append(c); reveal(g);
-      feedback(g, 'Appointment booked: ' + slot + ', Paris Opéra.');
-      chips(g, [{ label: 'That’s all, thanks' }]);
-    });
-  }
-  function flowOutOfScope() {
-    return flowLive(S.lastText || 'Can you help with mortgages, loans or investments?', 'Léa is thinking…', 'Ready');
-  }
-  function flowRates() {
-    S.misses = 0; var g = group();
-    return pause(g).then(function () { return say(g, 'Current rates are on the mortgage rates page. An advisor can tell you which rate applies to you.'); })
-      .then(function () {
-        var a = h('a', 'link', I.ext + '<span>Mortgage rates page</span>'); a.href = '#'; g.append(a);
-        chips(g, [{ label: 'Talk to an advisor', icon: 'headset' }]);
-      });
-  }
-  function flowThanks() {
-    return flowLive(S.lastText || 'That’s all, thanks', 'Léa is thinking…', 'Ready');
-  }
-  function flowFallback() {
-    /* free-text: always hit live agent; keep miss counter for handoff hint */
-    S.misses += 1;
-    var g = group();
-    var st = status(g, 'Léa is thinking…');
-    return apiChat(S.lastText || 'Help').then(function (data) {
-      if (data.error && !(data.assistant_text || data.reply)) {
-        st.el.classList.add('stopped');
-        st.el.innerHTML = I.xcircle + '<span></span>';
-        st.el.lastChild.textContent = 'Could not reach Léa';
-        return say(g, 'Sorry, I could not reach the assistant. Please try again or talk to an advisor.', { instant: true })
-          .then(function () { chips(g, [{ label: 'Talk to an advisor', icon: 'headset' }]); });
-      }
-      st.done('Ready');
-      var reply = data.assistant_text || data.reply || 'Sorry, I didn’t get that.';
-      var html = mdLite(reply);
-      return say(g, html, { instant: true }).then(function () {
-        feedback(g, strip(html.replace(/<br>/g, ' ')));
-        if (S.misses >= 2) {
-          chips(g, [{ label: 'Talk to an advisor', icon: 'headset' }, { label: 'Show what you can do' }]);
-        } else {
-          followUpsFromContext(g);
-        }
-      });
-    });
-  }
 
-  /* ---------- human handoff ---------- */
+  /* ---------- human handoff (the advisor side is simulated) ---------- */
+  function handoffSummary(data) {
+    var t = (data.tools || []).filter(function (x) { return x.name === 'transfer_to_advisor' && x.args; })[0];
+    return t ? t.args.summary : '';
+  }
   function clearTimers() { S.timers.forEach(clearTimeout); S.timers = []; }
-  function flowHandoff() {
-    S.misses = 0;
-    if (S.mode === 'human') return Promise.resolve();
-    var g = group();
-    if (S.mode === 'queue') return say(g, 'You’re already in the queue. An advisor will join shortly.', { instant: true });
-    return pause(g, 400).then(function () {
-      return say(g, 'I’ll connect you with an advisor and share this conversation, so you won’t need to repeat yourself.');
-    }).then(function () {
-      S.mode = 'queue';
-      var c = h('div', 'card',
-        '<div class="cardhead"><div class="tint tint-h">' + I.headset + '</div><div class="col"><span class="strong">Connecting you to an advisor</span><span class="muted small eta">About 3 min · you’re 2nd in line</span></div></div>' +
-        '<div class="btnrow"></div>');
-      var cb = btn('btn btn-s', I.call + '<span>Request a callback</span>', function () { leaveQueue(c); submit('Request a callback instead', flowCallback); });
-      var lv = btn('btn btn-s', 'Leave queue', function () { leaveQueue(c); submit('Leave queue', flowLeftQueue); });
-      c.querySelector('.btnrow').append(cb, lv);
-      g.append(c); reveal(g);
-      var eta = c.querySelector('.eta');
-      S.timers.push(setTimeout(function () { if (S.mode === 'queue') { eta.textContent = 'About 1 min · you’re next in line'; announce('You’re next in line'); } }, reduceMotion ? 1500 : 3500));
-      S.timers.push(setTimeout(function () { if (S.mode === 'queue') { disableCard(c); advisorJoins(); } }, reduceMotion ? 3000 : 7500));
-    });
-  }
-  function leaveQueue(c) { clearTimers(); S.mode = 'ai'; disableCard(c); }
-  function flowQueued() { sys('The advisor will see your message when they join.'); return Promise.resolve(); }
-  function flowCallback() {
-    var g = group(), st = status(g, 'Requesting a callback…');
-    return sleep(800).then(function () {
-      st.done('Callback requested');
-      return say(g, 'Done. An advisor will call you on your registered number ending 42.');
-    }).then(function () {
-      g.append(h('div', 'card', '<div class="cardhead"><div class="tint tint-h">' + I.call + '</div><div class="col grow"><span class="strong">Callback requested</span><span class="muted small num">Registered number ···· 42</span></div><span class="pill ok">Requested</span></div>'));
-      chips(g, [{ label: 'That’s all, thanks' }]);
-    });
-  }
-  function flowLeftQueue() {
-    var g = group();
-    return say(g, 'You’ve left the queue. I’m here if you need anything else.', { instant: true }).then(function () { suggestions(g); });
+  function startHandoff(g, r, summary) {
+    S.mode = 'queue';
+    var c = h('div', 'card',
+      '<div class="cardhead"><div class="tint tint-h">' + I.headset + '</div><div class="col"><span class="strong">Connecting you to an advisor</span><span class="muted small eta"></span></div></div>' +
+      '<div class="small sumr"></div><div class="btnrow"></div>');
+    var eta = c.querySelector('.eta');
+    eta.textContent = 'About ' + r.estimated_wait_minutes + ' min · you’re number ' + r.queue_position + ' in line';
+    if (summary) c.querySelector('.sumr').textContent = 'Summary for the advisor: ' + summary; else c.querySelector('.sumr').remove();
+    c.querySelector('.btnrow').append(btn('btn btn-s', 'Leave queue', function () {
+      clearTimers(); S.mode = 'ai'; disableCard(c); sys('You left the queue. You’re back with Léa.');
+    }));
+    g.append(c); reveal(g);
+    S.timers.push(setTimeout(function () { if (S.mode === 'queue') { eta.textContent = 'About 1 min · you’re next in line'; announce('You’re next in line'); } }, reduceMotion ? 1500 : 3500));
+    S.timers.push(setTimeout(function () { if (S.mode === 'queue') { disableCard(c); advisorJoins(); } }, reduceMotion ? 3000 : 7500));
   }
   function setHeader(mode) {
     var av = $('#lea-av'), name = $('#lea-name'), role = $('#lea-role'), sub = $('#lea-sub'), lbl = $('#lea-input-label');
-    if (mode === 'human') {
-      panel.classList.add('human'); av.textContent = 'SM'; name.textContent = 'Sophie'; role.textContent = 'Human advisor';
-      sub.textContent = 'Paris Opéra branch · demo'; input.placeholder = 'Message Sophie'; lbl.textContent = 'Message Sophie';
-      footNote.innerHTML = 'You’re chatting with a person · <a href="#">Privacy</a>';
-      advBtn.innerHTML = I.x + '<span>End chat</span>'; advBtn.dataset.mode = 'end';
-      $('#lea-menu-adv').hidden = true;
-    } else {
-      panel.classList.remove('human'); av.innerHTML = I.spark; name.textContent = 'Léa'; role.textContent = 'AI assistant';
-      sub.textContent = 'Demo · Advisors on request';
-      input.placeholder = S.auth ? 'Ask about accounts, cards or branches' : 'Ask about branch hours or products';
-      lbl.textContent = 'Message Léa';
-      footNote.innerHTML = 'Léa can make mistakes · <a href="#">Privacy</a>';
-      advBtn.innerHTML = I.headset + '<span>Talk to an advisor</span>'; advBtn.dataset.mode = 'adv';
-      $('#lea-menu-adv').hidden = false;
-    }
+    var human = mode === 'human';
+    panel.classList.toggle('human', human);
+    if (human) { av.textContent = 'SM'; } else { av.innerHTML = I.spark; }
+    name.textContent = human ? 'Sophie' : 'Léa';
+    role.textContent = human ? 'Human advisor' : 'AI assistant';
+    sub.textContent = human ? 'BNP Paribas customer support · demo' : 'Demo · Advisors on request';
+    input.placeholder = human ? 'Message Sophie' : (S.auth ? 'Ask about accounts, cards or branches' : 'Ask about branches, products or fees');
+    lbl.textContent = human ? 'Message Sophie' : 'Message Léa';
+    footNote.innerHTML = human ? 'You’re chatting with a person · <a href="#">Privacy</a>' : 'Léa can make mistakes · <a href="#">Privacy</a>';
+    advBtn.innerHTML = human ? I.x + '<span>End chat</span>' : I.headset + '<span>Talk to an advisor</span>';
+    advBtn.dataset.mode = human ? 'end' : 'adv';
+    $('#lea-menu-adv').hidden = human;
   }
   function advisorJoins() {
     S.mode = 'human';
     sys('Sophie joined · ' + time(), 'day');
     setHeader('human');
-    var g = group('human'), text = 'Hi Camille, I’m Sophie from Paris Opéra. I’ve read your chat with Léa. How can I help?';
-    var b = h('div', 'bot hum', '<p></p>'); b.firstChild.textContent = text; g.append(b); reveal(g);
-    S.transcript.push({ who: 'Sophie (human advisor)', time: time(), text: text });
+    var text = 'Hi' + (S.auth ? ' Camille' : '') + ', I’m Sophie from BNP Paribas customer support. I’ve read your conversation with Léa, so you don’t need to repeat yourself. How can I help?';
+    var g = group('human'); say(g, mdLite(text));
     announce('Sophie, a human advisor, joined the chat');
     notify('human', text);
   }
@@ -1091,119 +733,60 @@ body.lea-lock{overflow:hidden}
     var g = group('human');
     return pause(g, 1400).then(function () {
       S.humanReplies += 1;
-      var text = S.humanReplies === 1 ? 'Thanks, Camille. Give me a moment to pull up your file.' : 'Noted. I’ll come back to you on this in a moment.';
-      return say(g, text).then(function () { notify('human', text); });
+      var text = S.humanReplies === 1 ? 'Thanks. Give me a moment to look into this.' : 'Noted. I’ll come back to you on this in a moment.';
+      say(g, mdLite(text)); notify('human', text);
     });
   }
   function endHumanChat() {
     clearTimers(); S.mode = 'ai';
     sys('Sophie left the chat · ' + time(), 'day');
     setHeader('ai');
-    var g = group();
-    say(g, 'You’re back with Léa, the AI assistant.', { instant: true });
+    var g = group(); say(g, 'You’re back with Léa, the AI assistant.');
     csat(g, 'Did Sophie solve your request?');
   }
 
-  /* ---------- auth, page sync, unread, open/close ---------- */
+  /* ---------- sign-in (simulated), page sync, open and close ---------- */
   function syncPageCard() {
     var s = $('#card-status'), t = $('#card-tag');
     if (!s || !t) return;
-    if (S.locked) { s.textContent = 'Locked via Léa · unlock anytime'; t.textContent = 'Locked'; t.classList.add('tag-lock'); }
-    else { s.textContent = 'Active · standard limits'; t.textContent = 'Demo'; t.classList.remove('tag-lock'); }
+    s.textContent = S.locked ? 'Locked via Léa' : 'Active · standard limits';
+    t.textContent = S.locked ? 'Locked' : 'Demo';
+    t.classList.toggle('tag-lock', S.locked);
   }
   function syncAuthUI() {
-    var cta = $('#site-cta');
-    var guestPanel = $('#guest-panel');
-    var helloPanel = $('#hello-panel');
-    var authOv = $('#auth-overview');
-    var heroP = $('#hero-p');
-    var heroActions = $('#hero-actions');
-    var menuIn = $('#lea-menu-signin');
-    var menuOut = $('#lea-menu-signout');
-    if (S.auth) {
-      if (cta) { cta.textContent = 'Sign out'; cta.classList.remove('cta-ghost'); cta.setAttribute('aria-label', 'Sign out'); }
-      if (guestPanel) guestPanel.hidden = true;
-      if (helloPanel) helloPanel.hidden = false;
-      if (authOv) authOv.hidden = false;
-      if (heroP) heroP.textContent = 'Manage accounts and cards, find your branch, and get help when you need it. Léa is available in the bottom-right corner.';
-      if (heroActions) {
-        heroActions.innerHTML = '<a class="pbtn pbtn-w" href="#">Open an account</a><a class="pbtn pbtn-o" href="#">Find a branch</a>';
-      }
-      if (menuIn) menuIn.hidden = true;
-      if (menuOut) menuOut.hidden = false;
-      input.placeholder = 'Ask about accounts, cards or branches';
-    } else {
-      if (cta) { cta.textContent = 'Sign in'; cta.classList.remove('cta-ghost'); cta.setAttribute('aria-label', 'Sign in'); }
-      if (guestPanel) guestPanel.hidden = false;
-      if (helloPanel) helloPanel.hidden = true;
-      if (authOv) authOv.hidden = true;
-      if (heroP) heroP.textContent = 'Find a branch, explore products, and get help from Léa. Sign in to manage accounts and cards.';
-      if (heroActions) {
-        heroActions.innerHTML = '';
-        var hs = btn('pbtn pbtn-w', 'Sign in', function () { openLoginModal(); });
-        hs.removeAttribute('type'); hs.type = 'button';
-        var fb = h('a', 'pbtn pbtn-o'); fb.href = '#'; fb.textContent = 'Find a branch';
-        heroActions.append(hs, fb);
-      }
-      if (menuIn) menuIn.hidden = false;
-      if (menuOut) menuOut.hidden = true;
-      input.placeholder = 'Ask about branch hours or products';
-      var gs = $('#guest-signin');
-      if (gs && !gs._bound) { gs._bound = true; gs.addEventListener('click', function () { openLoginModal(); }); }
-    }
+    var cta = $('#site-cta'), heroActions = $('#hero-actions');
+    cta.textContent = S.auth ? 'Sign out' : 'Sign in'; cta.setAttribute('aria-label', cta.textContent);
+    $('#guest-panel').hidden = S.auth; $('#hello-panel').hidden = !S.auth; $('#auth-overview').hidden = !S.auth;
+    $('#hero-p').textContent = S.auth
+      ? 'Manage accounts and cards, find your branch, and get help when you need it. Léa is available in the bottom-right corner.'
+      : 'Find a branch, explore products, and get help from Léa. Sign in to manage accounts and cards.';
+    heroActions.innerHTML = '';
+    if (!S.auth) heroActions.append(btn('pbtn pbtn-w', 'Sign in', openLoginModal));
+    var fb = h('a', 'pbtn pbtn-o'); fb.href = '#'; fb.textContent = 'Find a branch'; heroActions.append(fb);
+    $('#lea-menu-signin').hidden = S.auth; $('#lea-menu-signout').hidden = !S.auth;
+    input.placeholder = S.auth ? 'Ask about accounts, cards or branches' : 'Ask about branches, products or fees';
     syncPageCard();
   }
-  function openLoginModal() {
-    var m = $('#login-modal');
-    if (!m) return;
-    m.hidden = false;
-    setTimeout(function () { var b = $('#login-continue'); if (b) b.focus(); }, 30);
-  }
-  function closeLoginModal() {
-    var m = $('#login-modal');
-    if (m) m.hidden = true;
-  }
-  function signInDemo(fromChat) {
-    closeLoginModal();
-    var wasAuth = S.auth;
-    S.auth = true;
-    S.conversationId = null; /* fresh authenticated session preamble */
-    S.locked = false;
-    syncAuthUI();
-    if (S.started) {
-      if (!wasAuth) {
-        sys('You’re signed in as Camille');
-        announce('You’re signed in as Camille');
-        if (fromChat !== false) {
-          var g = group();
-          say(g, 'Welcome back, Camille. I can check your balance, lock a card, or answer branch questions — without asking for your ID.', { instant: true })
-            .then(function () {
-              g.append(h('div', 'sec', I.shield + '<span>You’re signed in. I will never ask for your password, PIN or full card number.</span>'));
-              suggestions(g, true);
-            });
-        }
-      }
-    }
-  }
-  function signOutDemo() {
-    closeLoginModal();
-    S.auth = false;
-    S.locked = false;
-    S.conversationId = null;
-    S.mode = 'ai';
+  function openLoginModal() { $('#login-modal').hidden = false; setTimeout(function () { $('#login-continue').focus(); }, 30); }
+  function closeLoginModal() { $('#login-modal').hidden = true; }
+  function resetChat() {
+    S.gen += 1; if (S.tok) S.tok.cancelled = true;
+    if (S.abort) { try { S.abort.abort(); } catch (e) {} S.abort = null; }
     clearTimers();
-    syncAuthUI();
-    setHeader('ai');
-    if (S.started) {
-      S.gen += 1;
-      if (S.tok) S.tok.cancelled = true;
-      if (S.abort) { try { S.abort.abort(); } catch (e) {} S.abort = null; }
-      S.busy = false; S.tok = null; S.misses = 0; S.humanReplies = 0; S.transcript = []; S.lastText = '';
-      log.innerHTML = '';
-      welcome();
-      setSendMode();
-      announce('Signed out. You’re browsing as a guest.');
-    }
+    S.busy = false; S.tok = null; S.mode = 'ai'; S.humanReplies = 0; S.transcript = []; S.conversationId = null;
+    log.innerHTML = ''; setHeader('ai'); setSendMode();
+    if (S.started) welcome();
+  }
+  function signIn() {
+    closeLoginModal();
+    if (S.auth) return;
+    S.auth = true; S.locked = false; syncAuthUI();
+    resetChat(); /* a new conversation, started with the signed-in note */
+    if (S.started) announce('You’re signed in as Camille');
+  }
+  function signOut() {
+    S.auth = false; S.locked = false; syncAuthUI(); resetChat();
+    if (S.started) announce('Signed out. You’re browsing as a guest.');
   }
   function updateLauncherLabel() {
     launcher.setAttribute('aria-label', S.unread ? 'Chat with Léa, ' + S.unread + ' unread message' + (S.unread > 1 ? 's' : '') : 'Chat with Léa');
@@ -1218,8 +801,7 @@ body.lea-lock{overflow:hidden}
     S.open = true; panel.hidden = false; launcher.hidden = true; preview.hidden = true;
     launcher.setAttribute('aria-expanded', 'true');
     S.unread = 0; badge.hidden = true; updateLauncherLabel();
-    if (isSmall()) { document.body.classList.add('lea-lock'); panel.setAttribute('aria-modal', 'true'); }
-    else panel.setAttribute('aria-modal', 'false');
+    if (isSmall()) { document.body.classList.add('lea-lock'); panel.setAttribute('aria-modal', 'true'); } else panel.setAttribute('aria-modal', 'false');
     if (!S.started) { S.started = true; welcome(); }
     setTimeout(function () { input.focus(); }, 30);
   }
@@ -1234,14 +816,6 @@ body.lea-lock{overflow:hidden}
     menu.hidden = !open; menuBtn.setAttribute('aria-expanded', String(open));
     if (open) { var first = menu.querySelector('[role=menuitem]:not([hidden])'); if (first) first.focus(); }
   }
-  function newConversation() {
-    S.gen += 1; if (S.tok) S.tok.cancelled = true;
-    if (S.abort) { try { S.abort.abort(); } catch (e) {} S.abort = null; }
-    clearTimers();
-    S.busy = false; S.tok = null; S.misses = 0; S.mode = 'ai'; S.humanReplies = 0; S.transcript = [];
-    S.conversationId = null; S.lastText = '';
-    log.innerHTML = ''; setHeader('ai'); welcome(); setSendMode(); input.focus();
-  }
   function downloadTranscript() {
     var lines = S.transcript.map(function (m) { return '[' + m.time + '] ' + m.who + ': ' + m.text; });
     var blob = new Blob(['Léa chat transcript (demo), ' + new Date().toLocaleString('en-GB') + '\n\n' + lines.join('\n') + '\n'], { type: 'text/plain' });
@@ -1249,13 +823,11 @@ body.lea-lock{overflow:hidden}
     document.body.append(a); a.click(); a.remove();
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1500);
   }
+  function talkToAdvisor() { submit('I’d like to talk to an advisor.'); }
 
   /* ---------- wiring ---------- */
-  $('#lea-av').innerHTML = I.spark;
   expandBtn.innerHTML = I.expand;
-  sendBtn.innerHTML = I.send;
-  footNote.innerHTML = 'Léa can make mistakes · <a href="#">Privacy</a>';
-  advBtn.innerHTML = I.headset + '<span>Talk to an advisor</span>'; advBtn.dataset.mode = 'adv';
+  setHeader('ai'); setSendMode();
   var items = menu.querySelectorAll('[role=menuitem]');
   items[0].innerHTML = I.headset + '<span>Talk to an advisor</span>';
   items[1].innerHTML = I.plus + '<span>Start a new conversation</span>';
@@ -1272,20 +844,17 @@ body.lea-lock{overflow:hidden}
     var on = !panel.classList.contains('xl');
     panel.classList.toggle('xl', on); expandBtn.setAttribute('aria-pressed', String(on)); expandBtn.innerHTML = on ? I.shrink : I.expand;
   });
-  advBtn.addEventListener('click', function () {
-    if (advBtn.dataset.mode === 'end') { endHumanChat(); return; }
-    submit('Talk to an advisor', flowHandoff);
-  });
+  advBtn.addEventListener('click', function () { if (advBtn.dataset.mode === 'end') endHumanChat(); else talkToAdvisor(); });
   menuBtn.addEventListener('click', function () { toggleMenu(); });
   menu.addEventListener('click', function (e) {
     var it = e.target.closest('[data-act]'); if (!it) return;
     e.preventDefault(); toggleMenu(false); menuBtn.focus();
     var act = it.dataset.act;
-    if (act === 'advisor') submit('Talk to an advisor', flowHandoff);
-    else if (act === 'new') newConversation();
+    if (act === 'advisor') talkToAdvisor();
+    else if (act === 'new') resetChat();
     else if (act === 'download') downloadTranscript();
     else if (act === 'signin') openLoginModal();
-    else if (act === 'signout') signOutDemo();
+    else if (act === 'signout') signOut();
   });
   menu.addEventListener('keydown', function (e) {
     var list = Array.prototype.filter.call(menu.querySelectorAll('[role=menuitem]'), function (x) { return !x.hidden; });
@@ -1294,15 +863,9 @@ body.lea-lock{overflow:hidden}
     else if (e.key === 'ArrowUp') { e.preventDefault(); list[(i - 1 + list.length) % list.length].focus(); }
     else if (e.key === 'Tab') { toggleMenu(false); }
   });
-  document.addEventListener('click', function (e) {
-    if (!menu.hidden && !menu.contains(e.target) && !menuBtn.contains(e.target)) toggleMenu(false);
-  });
+  document.addEventListener('click', function (e) { if (!menu.hidden && !menu.contains(e.target) && !menuBtn.contains(e.target)) toggleMenu(false); });
   panel.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      if (!menu.hidden) { toggleMenu(false); menuBtn.focus(); } else minimise();
-      return;
-    }
+    if (e.key === 'Escape') { e.preventDefault(); if (!menu.hidden) { toggleMenu(false); menuBtn.focus(); } else minimise(); return; }
     if (e.key === 'Tab' && isSmall()) {
       var f = Array.prototype.filter.call(panel.querySelectorAll('button:not([disabled]), a[href], textarea'), function (x) { return x.offsetParent !== null; });
       if (!f.length) return;
@@ -1312,43 +875,23 @@ body.lea-lock{overflow:hidden}
     }
   });
   function autosize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 124) + 'px'; }
-  function submitInput() {
-    if (S.busy || !input.value.trim()) return;
-    var t = input.value; input.value = ''; autosize(); submit(t); setSendMode();
-  }
+  function submitInput() { if (S.busy || !input.value.trim()) return; var t = input.value; input.value = ''; autosize(); submit(t); setSendMode(); }
   input.addEventListener('input', function () { autosize(); setSendMode(); });
-  input.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submitInput(); }
-  });
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submitInput(); } });
   sendBtn.addEventListener('click', function () {
-    if (S.busy) {
-      if (S.tok) S.tok.cancelled = true;
-      if (S.abort) { try { S.abort.abort(); } catch (e) {} }
-      return;
-    }
+    if (S.busy) { if (S.tok) S.tok.cancelled = true; if (S.abort) { try { S.abort.abort(); } catch (e) {} } return; }
     submitInput();
   });
-
-  var siteCta = $('#site-cta');
-  if (siteCta) siteCta.addEventListener('click', function () {
-    if (S.auth) { signOutDemo(); return; }
-    openLoginModal();
-  });
-  var loginContinue = $('#login-continue');
-  var loginCancel = $('#login-cancel');
-  var loginModal = $('#login-modal');
-  if (loginContinue) loginContinue.addEventListener('click', function () { signInDemo(true); });
-  if (loginCancel) loginCancel.addEventListener('click', closeLoginModal);
-  if (loginModal) {
-    loginModal.addEventListener('click', function (e) { if (e.target === loginModal) closeLoginModal(); });
-    loginModal.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') { e.preventDefault(); closeLoginModal(); }
-    });
-  }
+  $('#site-cta').addEventListener('click', function () { if (S.auth) signOut(); else openLoginModal(); });
+  $('#guest-signin').addEventListener('click', openLoginModal);
+  $('#login-continue').addEventListener('click', signIn);
+  $('#login-cancel').addEventListener('click', closeLoginModal);
+  $('#login-modal').addEventListener('click', function (e) { if (e.target === $('#login-modal')) closeLoginModal(); });
+  $('#login-modal').addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.preventDefault(); closeLoginModal(); } });
   syncAuthUI();
 
-  if (/[?&]open=1\b/.test(location.search)) openChat();
   if (/[?&]auth=1\b/.test(location.search)) { S.auth = true; syncAuthUI(); }
+  if (/[?&]open=1\b/.test(location.search)) openChat();
 })();
 </script>
 </body>
