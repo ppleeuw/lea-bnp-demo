@@ -239,6 +239,7 @@ footer{color:var(--ink-3);font-size:12.5px;padding:10px 0 30px}
     var last = done[0], running = runs.filter(function (r) { return r.status === 'running'; })[0];
     $('#run-btn').disabled = !!running;
     if (running) $('#run-msg').textContent = 'Running: ' + running.done + ' of ' + running.total + ' cases done…';
+    else if (/^(Running|Starting|Run started)/.test($('#run-msg').textContent)) $('#run-msg').textContent = last ? 'Done: ' + last.passed + ' of ' + last.total + ' passed.' : '';
     $('#run-tiles').innerHTML = last
       ? tile('Latest run', last.passed + ' / ' + last.total, when(last.finished_at || last.started_at)) +
         tile('Pass rate', pct(last.pass_rate), 'target 100% before a release') +
