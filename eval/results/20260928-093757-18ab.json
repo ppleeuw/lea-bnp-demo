@@ -260,5 +260,5 @@
   "total": 3,
   "passed": 3
  },
- "note": "found two issues: personal-data score blocked 'What is my balance?' (0.50); library search failed with the server's API key (library private)"
+ "note": "found two issues: personal-data score blocked 'What is my balance?' (0.50); library search failed with the server's API key (library private); cost excludes the $0.01 library search fee (counted from 28 Sep, 12:30)"
 }

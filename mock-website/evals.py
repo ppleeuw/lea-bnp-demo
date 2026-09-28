@@ -9,6 +9,11 @@ Checks on the whole conversation:
     expect_pending     a tool that must be waiting for the customer's confirmation
     expect_guardrail   the guardrail that must have fired
     must_contain / must_contain_any / must_not_contain   on the last answer
+The checks fall into four layers, reported separately like the weather agent's eval:
+    tools          the right tools ran, and the forbidden ones did not
+    confirmation   a card lock waited for the customer's tap
+    guardrails     the expected guardrail stopped the message
+    answer         what the last answer must and must not say
 
 Command line (no API key needed with --base, it calls the website like a browser):
     python mock-website/evals.py --base https://lea-bnp-demo.onrender.com --save
@@ -41,6 +46,30 @@ def load_cases() -> list[dict[str, Any]]:
     return json.loads(CASES_FILE.read_text(encoding="utf-8"))
 
 
+LAYERS = {
+    "tools": ("expect_tools", "forbid_tools"),
+    "confirmation": ("expect_pending",),
+    "guardrails": ("expect_guardrail",),
+    "answer": ("must_contain", "must_contain_any", "must_not_contain"),
+}
+
+
+def _layer_of(problem: str) -> str:
+    if problem.startswith(("expected tool", "forbidden tool")):
+        return "tools"
+    if "wait for confirmation" in problem:
+        return "confirmation"
+    if problem.startswith("expected guardrail"):
+        return "guardrails"
+    return "answer"
+
+
+def layers_for(case: dict[str, Any], problems: list[str]) -> dict[str, bool | None]:
+    """Per layer: None when the case has no check in it, else whether all its checks passed."""
+    failed = {_layer_of(p) for p in problems}
+    return {layer: (layer not in failed) if any(case.get(k) for k in keys) else None for layer, keys in LAYERS.items()}
+
+
 def problems_for(case: dict[str, Any], responses: list[dict[str, Any]]) -> list[str]:
     ran = {t["name"] for r in responses for t in r.get("tools", []) if t.get("ok")}
     pending = {r["pending"]["tool"] for r in responses if r.get("pending")}
@@ -71,7 +100,7 @@ def run_case(case: dict[str, Any], send: Sender) -> dict[str, Any]:
         responses.append(r)
     problems = problems_for(case, responses)
     return {
-        "name": case["name"], "passed": not problems, "problems": problems,
+        "name": case["name"], "passed": not problems, "problems": problems, "layers": layers_for(case, problems),
         "latency_ms": sum(r.get("latency_ms") or 0 for r in responses),
         "cost_usd": round(sum((r.get("usage") or {}).get("cost_usd", 0) for r in responses), 6),
         "model_calls": sum((r.get("usage") or {}).get("model_calls", 0) for r in responses),
@@ -93,7 +122,8 @@ def run_all(send: Sender, label: str, run_id: str | None = None) -> dict[str, An
         try:
             result = run_case(case, send)
         except Exception as e:  # noqa: BLE001 - one broken case must not stop the run
-            result = {"name": case["name"], "passed": False, "problems": [f"error: {e}"], "latency_ms": 0,
+            result = {"name": case["name"], "passed": False, "problems": [f"error: {e}"],
+                      "layers": {layer: False for layer in LAYERS}, "latency_ms": 0,
                       "cost_usd": 0, "model_calls": 0, "tools": [], "guardrail": None,
                       "expects_guardrail": bool(case.get("expect_guardrail")), "answer": ""}
         run["cases"].append(result)
@@ -109,6 +139,9 @@ def run_all(send: Sender, label: str, run_id: str | None = None) -> dict[str, An
         "latency_ms_mean": round(statistics.mean(latencies)) if latencies else None,
         "latency_ms_max": max(latencies) if latencies else None,
         "guardrail_cases": {"total": len(guard), "passed": sum(c["passed"] for c in guard)},
+        "layers": {layer: {"applicable": sum(1 for c in run["cases"] if c.get("layers", {}).get(layer) is not None),
+                           "passed": sum(1 for c in run["cases"] if c.get("layers", {}).get(layer) is True)}
+                   for layer in LAYERS},
     })
     metrics.save_run(run)
     return run

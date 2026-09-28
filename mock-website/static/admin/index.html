@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Léa Evals Console</title>
+  <meta name="description" content="Evals, traces, cost and guardrails of the Léa demo assistant.">
+  <link rel="icon" type="image/svg+xml" href="/static/admin/logo.svg">
+  <!-- Fonts are self-hosted in /static/admin/fonts (see admin.css), so nothing here needs the network -->
+  <link rel="stylesheet" href="/static/admin/admin.css">
+</head>
+<body>
+  <div class="site">
+
+    <!-- Header: logo and name left, health dot and the link to the demo right -->
+    <header class="header">
+      <div class="brand">
+        <img src="/static/admin/logo.svg" width="32" height="32" alt="">
+        <span class="heading">Léa evals</span>
+        <span class="small muted">BNP Paribas retail support demo · not affiliated with BNP Paribas</span>
+      </div>
+      <div class="controls">
+        <button id="health-dot" class="health-dot" type="button" aria-label="Service health" aria-expanded="false">
+          <span class="dot" aria-hidden="true"></span>
+        </button>
+        <div id="health-card" class="card health-card small" hidden></div>
+        <a class="button-secondary link-button" href="/">Open the demo</a>
+      </div>
+    </header>
+
+    <!-- Menu left, page right. The menu keys match the page renderers in admin.js and the URL hash. -->
+    <div class="layout">
+      <nav id="menu" class="menu" aria-label="Console pages">
+        <a class="menu-item" href="#overview" data-page="overview">Overview</a>
+        <a class="menu-item" href="#eval" data-page="eval">Eval</a>
+        <a class="menu-item" href="#trace" data-page="trace">Trace</a>
+        <a class="menu-item" href="#cost" data-page="cost">Cost</a>
+        <a class="menu-item" href="#guardrails" data-page="guardrails">Guardrails</a>
+        <a class="menu-item" href="#agent" data-page="agent">Agent</a>
+        <a class="menu-item" href="#eu-ai-act" data-page="eu-ai-act">EU AI Act</a>
+      </nav>
+      <main id="page" class="page" aria-live="polite"></main>
+    </div>
+
+    <footer class="footer small">
+      <span>Léa evals · numbers from the server's own records: tokens from Mistral's usage per call, list prices, latency measured on the server.</span>
+    </footer>
+  </div>
+
+  <script src="/static/admin/admin.js"></script>
+</body>
+</html>

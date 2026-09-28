@@ -3,19 +3,19 @@
 A demo retail-banking website with Léa, a customer support assistant built on a Mistral Studio agent, and an evals console for the admin. **Not affiliated with BNP Paribas.** All data is synthetic.
 
 - Demo site: https://lea-bnp-demo.onrender.com
-- Evals console: https://lea-bnp-demo.onrender.com/admin
+- Evals console: https://lea-bnp-demo.onrender.com/admin (Overview, Eval, Trace, Cost, Guardrails, Agent, EU AI Act; the design system of the Weather Agent project)
 
 ## What runs where
 
 | Piece | Where it runs | What it does |
 | --- | --- | --- |
 | `mock-website/static/index.html` | Visitor's browser | The demo bank page and chat widget. Sends every message to `/api/chat`; draws the cards from what comes back. Sign-in and the in-app approval are simulated. |
-| `mock-website/static/admin.html` | Admin's browser | Evals console: golden-set runs, guardrails, cost, latency, recent turns. |
+| `mock-website/static/admin/` | Admin's browser | Evals console, a separate site: golden-set runs with four check layers, traces of every request step, cost per use case, guardrails, the live agent config and health. |
 | `mock-website/server.py` | Render (Frankfurt), FastAPI | The pages and the API: `/api/chat`, `/api/confirm`, `/api/admin/*`, `/health`. |
 | `mock-website/lea.py` | Render | The conversation with the Studio agent (Conversations API): input check, tool loop, card-lock hold, output check, metrics. |
 | `mock-website/guardrails.py` | Render | Input checks (patterns + Mistral moderation) and output checks. |
 | `mock-website/demo_bank.py` + `demo_bank.json` | Render | Stand-in for BNP's API gateway and core banking: checks each tool request and answers with standard demo data. No real bank is called. |
-| `mock-website/metrics.py`, `evals.py` | Render | Records every turn and every golden-set run for the evals console. |
+| `mock-website/metrics.py`, `evals.py` | Render | Turn records (no text), traces (last 50, memory only), golden-set runs, prices from mistral.ai/pricing/api. |
 | Studio agent `ag_01a0d88d…` | Mistral (EU) | Model `mistral-medium-latest`, instructions (`studio/agent_instructions_v12.md`), tools (`studio/tools_v12.json`), document library. |
 | Library "BNP Retail Support KB (Demo)" | Mistral (EU) | `kb-retail-support.md`: branch hours, fees, FAQ. The agent searches it itself. |
 | `mistral-moderation-2603` | Mistral (EU) | Scores every typed message (jailbreaking, personal data) before the agent sees it. |
