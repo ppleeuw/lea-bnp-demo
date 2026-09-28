@@ -1,3 +1,4 @@
-fastapi>=0.115
-uvicorn>=0.30
-mistralai>=2.0
+# Pinned to the versions of the last good Render build (28 Sep 2026), so a build never depends on the resolver
+fastapi==0.141.1
+uvicorn==0.54.0
+mistralai==2.10.1
