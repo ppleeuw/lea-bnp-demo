@@ -263,11 +263,11 @@ body.lea-lock{overflow:hidden}
   </div>
 </header>
 <main id="main">
-  <section class="hero" aria-labelledby="hero-t">
+  <section class="hero" id="hero" aria-labelledby="hero-t">
     <div class="wrap hero-in">
       <div>
         <h1 id="hero-t">Everyday banking,<br><span class="accent">always within reach</span></h1>
-        <p id="hero-p"></p>
+        <p>Find a branch, compare products and get answers from Léa, our AI assistant. Sign in to manage your accounts and cards.</p>
       </div>
       <div class="visa" aria-hidden="true">
         <div class="top"><span>BNP PARIBAS</span><span>Visa Classic</span></div>
@@ -794,10 +794,8 @@ body.lea-lock{overflow:hidden}
     var cta = $('#site-cta');
     cta.innerHTML = (S.auth ? I.logout + '<span>Sign out</span>' : I.lock + '<span>Access my accounts</span>');
     cta.setAttribute('aria-label', S.auth ? 'Sign out' : 'Access my accounts');
+    $('#hero').hidden = S.auth; /* the welcome hero is for guests only */
     $('#guest-panel').hidden = S.auth; $('#hello-panel').hidden = !S.auth;
-    $('#hero-p').textContent = S.auth
-      ? 'Welcome back, Camille. Check your balance, lock a card or find your branch: Léa is in the bottom-right corner.'
-      : 'Find a branch, compare products and get answers from Léa, our AI assistant. Sign in to manage your accounts and cards.';
     $('#lea-menu-signin').hidden = S.auth; $('#lea-menu-signout').hidden = !S.auth;
     input.placeholder = S.auth ? 'Ask about accounts, cards or branches' : 'Ask about branches, products or fees';
     syncPageCard();
