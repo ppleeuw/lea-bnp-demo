@@ -4,12 +4,14 @@ evals.py: the golden set, run from the admin site or from the command line.
 A case in eval/golden.json is a short conversation. Each turn is what the customer types, or
 {"confirm": "allow"} / {"confirm": "deny"} for the tap on the card-lock confirmation.
 Checks on the whole conversation:
+    expect_agent       the agent that must have answered the last turn: triage, faq, account or card
     expect_tools       tools that must have run successfully (document_library = the library was searched)
     forbid_tools       tools that must not have run successfully (a refused call does not count)
     expect_pending     a tool that must be waiting for the customer's confirmation
     expect_guardrail   the guardrail that must have fired
     must_contain / must_contain_any / must_not_contain   on the last answer
-The checks fall into four layers, reported separately like the weather agent's eval:
+The checks fall into five layers, reported separately:
+    routing        the triage agent handed the message to the right agent
     tools          the right tools ran, and the forbidden ones did not
     confirmation   a card lock waited for the customer's tap
     guardrails     the expected guardrail stopped the message
@@ -35,7 +37,7 @@ from typing import Any, Callable
 import metrics
 
 CASES_FILE = Path(__file__).resolve().parents[1] / "eval" / "golden.json"
-MIN_SECONDS_BETWEEN_RUNS = 180  # the admin button costs model calls; one run is about $0.10
+MIN_SECONDS_BETWEEN_RUNS = 180  # the admin button costs model calls; one run is about $0.15
 _run_lock = threading.Lock()
 _last_start = 0.0
 
@@ -47,6 +49,7 @@ def load_cases() -> list[dict[str, Any]]:
 
 
 LAYERS = {
+    "routing": ("expect_agent",),
     "tools": ("expect_tools", "forbid_tools"),
     "confirmation": ("expect_pending",),
     "guardrails": ("expect_guardrail",),
@@ -55,6 +58,8 @@ LAYERS = {
 
 
 def _layer_of(problem: str) -> str:
+    if problem.startswith("expected agent"):
+        return "routing"
     if problem.startswith(("expected tool", "forbidden tool")):
         return "tools"
     if "wait for confirmation" in problem:
@@ -75,7 +80,11 @@ def problems_for(case: dict[str, Any], responses: list[dict[str, Any]]) -> list[
     pending = {r["pending"]["tool"] for r in responses if r.get("pending")}
     fired = {r["guardrail"]["reason"] for r in responses if r.get("guardrail")}
     answer = (responses[-1].get("answer") or "").lower() if responses else ""
-    problems = [f"expected tool did not run: {t}" for t in case.get("expect_tools", []) if t not in ran]
+    agent = responses[-1].get("agent") if responses else None
+    problems = []
+    if case.get("expect_agent") and case["expect_agent"] != agent:
+        problems.append(f"expected agent {case['expect_agent']}, answered by {agent or 'none'}")
+    problems += [f"expected tool did not run: {t}" for t in case.get("expect_tools", []) if t not in ran]
     problems += [f"forbidden tool ran: {t}" for t in case.get("forbid_tools", []) if t in ran]
     if case.get("expect_pending") and case["expect_pending"] not in pending:
         problems.append(f"expected {case['expect_pending']} to wait for confirmation")
@@ -108,6 +117,8 @@ def run_case(case: dict[str, Any], send: Sender) -> dict[str, Any]:
                   for r in responses for t in r.get("tools", [])],
         "guardrail": next((r["guardrail"]["reason"] for r in responses if r.get("guardrail")), None),
         "expects_guardrail": bool(case.get("expect_guardrail")),
+        "route": [" → ".join(r.get("route") or []) for r in responses],
+        "agent": responses[-1].get("agent") if responses else None,
         "answer": (responses[-1].get("answer") or "")[:400] if responses else "",
     }
 
@@ -125,7 +136,8 @@ def run_all(send: Sender, label: str, run_id: str | None = None) -> dict[str, An
             result = {"name": case["name"], "passed": False, "problems": [f"error: {e}"],
                       "layers": {layer: False for layer in LAYERS}, "latency_ms": 0,
                       "cost_usd": 0, "model_calls": 0, "tools": [], "guardrail": None,
-                      "expects_guardrail": bool(case.get("expect_guardrail")), "answer": ""}
+                      "expects_guardrail": bool(case.get("expect_guardrail")), "route": [], "agent": None,
+                      "answer": ""}
         run["cases"].append(result)
         run["done"] = len(run["cases"])
         metrics.save_run(run)

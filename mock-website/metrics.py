@@ -27,16 +27,20 @@ TURNS_FILE = DATA_DIR / "turns.jsonl"
 # List prices in US dollars, from https://mistral.ai/pricing/api, read on 28 September 2026.
 PRICE_SOURCE = "https://mistral.ai/pricing/api"
 PRICES_CHECKED_ON = "2026-09-28"
-PRICE_INPUT = 1.50 / 1_000_000       # Mistral Medium 3.5, per input token
-PRICE_OUTPUT = 7.50 / 1_000_000      # Mistral Medium 3.5, per output token
+MODEL_PRICES = {                     # dollars per million tokens: (input, output)
+    "mistral-medium-latest": (1.50, 7.50),   # Mistral Medium 3.5
+    "mistral-small-latest": (0.15, 0.60),    # Mistral Small 4
+}
 PRICE_LIBRARY_CALL = 0.01            # per library search call
 PRICES = [
     {"item": "Mistral Medium 3.5", "id": "mistral-medium-latest", "unit": "per million tokens",
-     "input": 1.50, "output": 7.50, "used_for": "the agent: every model call"},
+     "input": 1.50, "output": 7.50, "used_for": "the FAQ, account and card agents"},
+    {"item": "Mistral Small 4", "id": "mistral-small-latest", "unit": "per million tokens",
+     "input": 0.15, "output": 0.60, "used_for": "the triage agent: every message starts here"},
     {"item": "Mistral Moderation 2", "id": "mistral-moderation-2603", "unit": "per million tokens",
      "input": 0.0, "output": 0.0, "used_for": "the input check on every typed message (free)"},
     {"item": "Library search", "id": "document_library", "unit": "per call",
-     "input": 0.01, "output": None, "used_for": "each search the agent runs in the library"},
+     "input": 0.01, "output": None, "used_for": "each search the FAQ agent runs in the library"},
     {"item": "Library indexing", "id": "libraries", "unit": "per million tokens",
      "input": 1.00, "output": None, "used_for": "once, when kb-retail-support.md was uploaded"},
 ]
@@ -47,8 +51,14 @@ TRACES: deque[dict[str, Any]] = deque(maxlen=50)
 RUNS: dict[str, dict[str, Any]] = {}
 
 
-def cost_usd(input_tokens: int, output_tokens: int, library_calls: int = 0) -> float:
-    return round(input_tokens * PRICE_INPUT + output_tokens * PRICE_OUTPUT + library_calls * PRICE_LIBRARY_CALL, 6)
+def model_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    price_in, price_out = MODEL_PRICES[model]
+    return round((input_tokens * price_in + output_tokens * price_out) / 1_000_000, 6)
+
+
+def price_rank(model: str) -> float:
+    """For picking the dearest model: its output price."""
+    return MODEL_PRICES[model][1]
 
 
 def record_turn(turn: dict[str, Any]) -> None:
@@ -139,6 +149,15 @@ def summary(source: str | None = None) -> dict[str, Any]:
         "latency_ms": round(statistics.mean(t["latency_ms"] for t in items)),
     } for name, items in sorted(groups.items())]
     reached_agent = [t for t in turns if not t.get("guardrail_in")]
+    routed = [t for t in reached_agent if t.get("route")]
+    by_agent: dict[str, list[dict[str, Any]]] = {}
+    for t in routed:
+        by_agent.setdefault(t["agent"], []).append(t)
+    per_agent = [{
+        "agent": name, "turns": len(items),
+        "cost_usd": round(statistics.mean(t["cost_usd"] for t in items), 5),
+        "latency_ms": round(statistics.mean(t["latency_ms"] for t in items)),
+    } for name, items in sorted(by_agent.items())]
     return {
         "turns": len(turns),
         "conversations": len(by_conversation),
@@ -160,6 +179,12 @@ def summary(source: str | None = None) -> dict[str, Any]:
             "passed_input_check": len(reached_agent)},
         "tools": dict(Counter(x["name"] for t in turns for x in t["tools"] if x.get("ok"))),
         "per_use_case": per_use_case,
+        "routing": {
+            "answered_by": per_agent,
+            "routes": dict(Counter(" → ".join(t["route"]) for t in routed).most_common()),
+            "handed_off": sum(1 for t in routed if len(t["route"]) > 1),
+            "handoffs": sum(len(t["route"]) - 1 for t in routed),
+            "turns": len(routed)},
         "library_share": round(sum(1 for t in reached_agent if "document_library" in [x["name"] for x in t["tools"]])
                                / len(reached_agent), 3) if reached_agent else None,
         "moderation_unavailable": sum(1 for t in turns if t.get("moderation_unavailable")),
@@ -174,7 +199,8 @@ def recent_turns(limit: int = 60) -> list[dict[str, Any]]:
 def traces() -> list[dict[str, Any]]:
     """The kept traces, newest first, without the steps."""
     with _lock:
-        return [{k: t[k] for k in ("id", "ts", "source", "kind", "signed_in", "question", "outcome", "totals", "guardrails")}
+        return [{k: t.get(k) for k in ("id", "ts", "source", "kind", "signed_in", "question", "outcome", "route",
+                                       "agent", "totals", "guardrails")}
                 for t in reversed(TRACES)]
 
 

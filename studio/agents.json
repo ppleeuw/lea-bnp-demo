@@ -1,0 +1,42 @@
+{
+  "triage": {
+    "id": "ag_01a0d88dbab7715789cfd424761a1c44",
+    "name": "Lea triage - BNP Paribas demo",
+    "label": "Triage",
+    "model": "mistral-small-latest",
+    "temperature": 0.2,
+    "description": "Routes every customer message to the FAQ, account or card agent; answers greetings, out-of-scope and advisor requests itself.",
+    "tools": ["transfer_to_advisor"],
+    "hands_off_to": ["faq", "account", "card"]
+  },
+  "faq": {
+    "id": "ag_01a0e7ca84b67027a9f46f2b5566d8e6",
+    "name": "Lea FAQ - BNP Paribas demo",
+    "label": "FAQ",
+    "model": "mistral-medium-latest",
+    "temperature": 0.3,
+    "description": "General questions from the document library: branches, hours, products, fees, security.",
+    "tools": ["document_library"],
+    "hands_off_to": ["triage"]
+  },
+  "account": {
+    "id": "ag_01a0e7ca86e67571a94307f1db22655a",
+    "name": "Lea account - BNP Paribas demo",
+    "label": "Account",
+    "model": "mistral-medium-latest",
+    "temperature": 0.3,
+    "description": "Balance of the signed-in customer, from get_account_balance.",
+    "tools": ["get_account_balance"],
+    "hands_off_to": ["triage"]
+  },
+  "card": {
+    "id": "ag_01a0e7ca8903736aad8ddc2cf11405e0",
+    "name": "Lea card - BNP Paribas demo",
+    "label": "Card",
+    "model": "mistral-medium-latest",
+    "temperature": 0.3,
+    "description": "Locks the signed-in customer's card, after the customer's confirmation in the app.",
+    "tools": ["lock_credit_card"],
+    "hands_off_to": ["triage"]
+  }
+}

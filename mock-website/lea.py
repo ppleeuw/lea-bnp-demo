@@ -1,12 +1,16 @@
 """
-lea.py: the conversation with Léa, the Studio agent, through Mistral's Conversations API.
+lea.py: the conversation with Léa through Mistral's Conversations API.
+
+Léa is four Studio agents (studio/agents.json). Every conversation starts at the triage agent,
+which hands off to the FAQ, account or card agent; a specialist hands back to triage when the
+customer moves on. Mistral runs the handoffs itself and reports them as agent.handoff entries.
 
 For every customer message, chat() does five things:
-  1. guardrails.check_input: patterns and Mistral moderation, before the agent sees anything
-  2. conversations.start or .append: the agent answers, searches its library, or asks for a tool
-  3. a tool request goes to demo_bank.check, then demo_bank.run with the demo data; a card lock
-     is held back and returned to the page as "pending" until the customer confirms in the app,
-     which comes back through confirm()
+  1. guardrails.check_input: patterns and Mistral moderation, before any agent sees anything
+  2. conversations.start or .append: the agents route, search the library, or ask for a tool
+  3. a tool request must be on the asking agent's allow-list, then passes demo_bank.check and
+     runs on the demo data in demo_bank.run; a card lock is held back and returned to the page
+     as "pending" until the customer confirms in the app, which comes back through confirm()
   4. guardrails.check_output on the final answer
   5. metrics: a turn record (no text) and a full trace (in memory only) for the evals console
 The model proposes; this code decides.
@@ -19,6 +23,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from mistralai.client import Mistral, models
@@ -27,8 +32,11 @@ import demo_bank
 import guardrails
 import metrics
 
-AGENT_ID = os.environ.get("MISTRAL_AGENT_ID", "ag_01a0d88dbab7715789cfd424761a1c44")
-AGENT_VERSION = os.environ.get("MISTRAL_AGENT_VERSION") or None  # None = latest; pin it in production
+# The four agents: id, model and allowed tools per role. studio/setup_agents.py creates them.
+AGENTS: dict[str, dict[str, Any]] = json.loads(
+    (Path(__file__).resolve().parents[1] / "studio" / "agents.json").read_text(encoding="utf-8"))
+ENTRY_AGENT = "triage"
+ROLE_BY_ID = {agent["id"]: role for role, agent in AGENTS.items()}
 MAX_TOOL_ROUNDS = 6
 
 # Added by the server to the first message of a conversation. The customer cannot set this:
@@ -70,6 +78,7 @@ class Turn:
         self.trace_id = uuid.uuid4().hex[:12]
         self.started = time.time()
         self.model_calls = self.input_tokens = self.output_tokens = self.library_calls = 0
+        self.model_cost = 0.0
         self.tools: list[dict[str, Any]] = []        # every tool asked for, with its outcome
         self.results: dict[str, dict[str, Any]] = {}  # successful results, by tool name
         self.sources: list[str] = []
@@ -77,6 +86,7 @@ class Turn:
         self.scores: dict[str, float] | None = None
         self.flags: list[str] = []
         self.pending: dict[str, Any] | None = None
+        self.route: list[str] = []  # the agents that handled this request, in order: triage, faq, ...
         self.events: list[dict[str, Any]] = []  # every guardrail check, pass or fail, for the trace
         self.steps: list[dict[str, Any]] = []   # every check, model call, library search and tool, for the trace
 
@@ -91,8 +101,7 @@ class Turn:
             resp = client().beta.conversations.append(conversation_id=self.conversation_id, inputs=inputs)
         else:
             handler = "conversations.start"
-            extra = {"agent_version": AGENT_VERSION} if AGENT_VERSION else {}
-            resp = client().beta.conversations.start(agent_id=AGENT_ID, inputs=inputs, **extra)
+            resp = client().beta.conversations.start(agent_id=AGENTS[ENTRY_AGENT]["id"], inputs=inputs)
             self.conversation_id = resp.conversation_id
         self.model_calls += 1
         usage = getattr(resp, "usage", None)
@@ -101,11 +110,23 @@ class Turn:
         self.input_tokens += tokens_in
         self.output_tokens += tokens_out
         outputs = resp.outputs or []
+        agents = self._follow(outputs)
+        # Mistral reports one usage for the whole call, not per agent: after a handoff all tokens
+        # are priced at the dearest model that took part, so the cost is an upper bound.
+        model = max((AGENTS[a]["model"] for a in agents if a in AGENTS), key=metrics.price_rank,
+                    default=AGENTS[ENTRY_AGENT]["model"])
+        cost = metrics.model_cost(model, tokens_in, tokens_out)
+        self.model_cost += cost
         self.steps.append({"name": f"Agent call {self.model_calls}", "kind": "model", "handler": handler,
-                           "latency_ms": int((time.time() - started) * 1000), "input_tokens": tokens_in,
-                           "output_tokens": tokens_out, "cost_usd": metrics.cost_usd(tokens_in, tokens_out),
-                           "request": _describe_inputs(inputs), "response": [_describe_entry(e) for e in outputs]})
+                           "agents": agents, "latency_ms": int((time.time() - started) * 1000),
+                           "input_tokens": tokens_in, "output_tokens": tokens_out, "priced_as": model,
+                           "cost_usd": cost, "request": _describe_inputs(inputs),
+                           "response": [_describe_entry(e) for e in outputs]})
         for entry in outputs:
+            if _is_handoff(entry):
+                src, dst = _role(entry.previous_agent_id), _role(entry.next_agent_id)
+                self.steps.append({"name": f"Handoff: {_label(src)} → {_label(dst)}", "kind": "handoff",
+                                   "handler": "run by Mistral", "request": {"from": src, "to": dst}})
             if _is_tool_execution(entry):  # a built-in tool Mistral ran itself: the library search
                 name = getattr(entry, "name", "")
                 name = str(getattr(name, "value", name))
@@ -121,6 +142,26 @@ class Turn:
                     self.sources.append(title)
         return resp
 
+    def _follow(self, outputs: list[Any]) -> list[str]:
+        """Add the agents in this reply to the route; return the ones that took part in it."""
+        seen: list[str] = []
+        for entry in outputs:
+            if _is_handoff(entry):
+                roles = [_role(entry.previous_agent_id), _role(entry.next_agent_id)]
+            else:
+                roles = [_role(entry.agent_id)] if getattr(entry, "agent_id", None) else []
+            for role in roles:
+                if not seen or seen[-1] != role:
+                    seen.append(role)
+                if not self.route or self.route[-1] != role:
+                    self.route.append(role)
+        return seen
+
+    @property
+    def agent(self) -> str | None:
+        """The agent that answered: the last one in the route."""
+        return self.route[-1] if self.route else None
+
     def tool(self, name: str, args: dict[str, Any], result: dict[str, Any], latency_ms: int = 0) -> None:
         self.tools.append({"name": name, "args": args, "ok": bool(result.get("ok")),
                            "error": result.get("error"), "status": result.get("status")})
@@ -131,13 +172,14 @@ class Turn:
 
     def finish(self, answer: str) -> dict[str, Any]:
         latency_ms = int((time.time() - self.started) * 1000)
-        cost = metrics.cost_usd(self.input_tokens, self.output_tokens, self.library_calls)
+        cost = round(self.model_cost + self.library_calls * metrics.PRICE_LIBRARY_CALL, 6)
         guardrail = ({"stage": "input", "reason": self.guardrail_in} if self.guardrail_in else
                      {"stage": "output", "reason": self.guardrail_out} if self.guardrail_out else None)
         ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
         record = {
             "ts": ts, "trace_id": self.trace_id, "source": self.source, "kind": self.kind,
-            "conversation_id": self.conversation_id, "signed_in": self.signed_in, "model_calls": self.model_calls,
+            "conversation_id": self.conversation_id, "signed_in": self.signed_in, "route": self.route,
+            "agent": self.agent, "model_calls": self.model_calls,
             "input_tokens": self.input_tokens, "output_tokens": self.output_tokens, "library_calls": self.library_calls,
             "cost_usd": cost, "latency_ms": latency_ms, "sources": self.sources, "scores": self.scores,
             "flags": self.flags, "guardrail_in": self.guardrail_in, "guardrail_out": self.guardrail_out,
@@ -152,13 +194,15 @@ class Turn:
         metrics.record_trace({
             "id": self.trace_id, "ts": ts, "source": self.source, "kind": self.kind, "signed_in": self.signed_in,
             "conversation_id": self.conversation_id, "question": self.question, "answer": answer, "outcome": outcome,
+            "route": self.route, "agent": self.agent,
             "sources": self.sources, "guardrails": self.events, "steps": self.steps,
             "totals": {"latency_ms": latency_ms, "cost_usd": cost, "input_tokens": self.input_tokens,
                        "output_tokens": self.output_tokens, "model_calls": self.model_calls,
                        "library_calls": self.library_calls},
         })
         return {
-            "conversation_id": self.conversation_id, "answer": answer, "tools": self.tools,
+            "conversation_id": self.conversation_id, "answer": answer, "route": self.route, "agent": self.agent,
+            "tools": self.tools,
             "results": self.results, "pending": self.pending, "sources": self.sources, "guardrail": guardrail,
             "trace_id": self.trace_id, "latency_ms": latency_ms,
             "usage": {"model_calls": self.model_calls, "input_tokens": self.input_tokens,
@@ -224,9 +268,14 @@ def _tool_loop(turn: Turn, resp: Any) -> dict[str, Any]:
         for call in calls:
             args = _args(call.arguments)
             started = time.time()
-            refused = demo_bank.check(call.name, args, turn.signed_in)
-            turn.event(f"Tool check: {call.name}", "tool", "fail" if refused else "pass",
-                       refused["error"] if refused else "allowed")
+            asked_by = _role(getattr(call, "agent_id", None))
+            refused = _not_allowed(asked_by, call.name)
+            turn.event(f"Tool allowed for the {_label(asked_by)} agent: {call.name}", "tool",
+                       "fail" if refused else "pass", refused["error"] if refused else "on its allow-list")
+            if refused is None:
+                refused = demo_bank.check(call.name, args, turn.signed_in)
+                turn.event(f"Tool check: {call.name}", "tool", "fail" if refused else "pass",
+                           refused["error"] if refused else "allowed")
             if refused is None and call.name in demo_bank.WRITE_TOOLS and held is None:
                 held = {"tool_call_id": call.tool_call_id, "name": call.name, "args": args, "signed_in": turn.signed_in}
                 continue
@@ -288,6 +337,23 @@ def _input_events(turn: Turn, check: dict[str, Any], latency_ms: int) -> None:
                        "latency_ms": latency_ms, "request": turn.question, "result": {"scores": scores}})
 
 
+# ----------------------------------------------------------------------------- the agents
+def _role(agent_id: str | None) -> str:
+    """triage, faq, account or card; an unknown ID keeps its own name so it shows in the trace."""
+    return ROLE_BY_ID.get(agent_id or "", agent_id or "unknown")
+
+
+def _label(role: str | None) -> str:
+    return AGENTS[role]["label"] if role in AGENTS else str(role)
+
+
+def _not_allowed(role: str, tool: str) -> dict[str, Any] | None:
+    """Each agent may only use its own tools, whatever it asks for (least privilege)."""
+    if role in AGENTS and tool in AGENTS[role]["tools"]:
+        return None
+    return demo_bank.refusal("TOOL_NOT_ALLOWED_FOR_AGENT", f"The {_label(role)} agent may not use {tool}.")
+
+
 # ----------------------------------------------------------------------------- reading Mistral's replies
 def _result_entry(tool_call_id: str, result: dict[str, Any]) -> Any:
     return models.FunctionResultEntry(tool_call_id=tool_call_id, result=json.dumps(result, ensure_ascii=False))
@@ -299,6 +365,10 @@ def _with_held_result(held: dict[str, Any], result: dict[str, Any]) -> list[Any]
 
 def _is_function_call(entry: Any) -> bool:
     return getattr(entry, "type", None) == "function.call" or type(entry).__name__ == "FunctionCallEntry"
+
+
+def _is_handoff(entry: Any) -> bool:
+    return getattr(entry, "type", None) == "agent.handoff" or type(entry).__name__ == "AgentHandoffEntry"
 
 
 def _is_tool_execution(entry: Any) -> bool:
@@ -317,9 +387,12 @@ def _get(chunk: Any, key: str) -> Any:
 
 
 def _text(outputs: list[Any]) -> str:
-    """The last answer's text. Source references (tool_reference chunks) are not text."""
+    """The last answer's text, from the agent that ended up handling the message: what an agent
+    wrote before handing off ("I will lock your card right away") is not shown. Source references
+    (tool_reference chunks) are not text."""
+    last_handoff = max((i for i, e in enumerate(outputs) if _is_handoff(e)), default=-1)
     texts = []
-    for entry in outputs:
+    for entry in outputs[last_handoff + 1:]:
         parts = [c if isinstance(c, str) else (_get(c, "text") or "") for c in _chunks(entry)]
         if any(parts):
             texts.append("".join(parts))
@@ -357,11 +430,15 @@ def _describe_inputs(inputs: Any) -> Any:
 def _describe_entry(entry: Any) -> dict[str, Any]:
     """One entry of the agent's reply, for the trace."""
     kind = getattr(entry, "type", None) or type(entry).__name__
+    agent = {"agent": _role(entry.agent_id)} if getattr(entry, "agent_id", None) else {}
+    if _is_handoff(entry):
+        return {"type": kind, "from": _role(entry.previous_agent_id), "to": _role(entry.next_agent_id)}
     if _is_function_call(entry):
-        return {"type": kind, "name": entry.name, "arguments": _args(entry.arguments)}
+        return {"type": kind, **agent, "name": entry.name, "arguments": _args(entry.arguments)}
     if _is_tool_execution(entry):
         name = getattr(entry, "name", "")
-        return {"type": kind, "name": str(getattr(name, "value", name)), "arguments": _args(getattr(entry, "arguments", None))}
+        return {"type": kind, **agent, "name": str(getattr(name, "value", name)),
+                "arguments": _args(getattr(entry, "arguments", None))}
     if _chunks(entry):
-        return {"type": kind, "text": _text([entry]), "sources": _sources(entry)}
-    return {"type": kind}
+        return {"type": kind, **agent, "text": _text([entry]), "sources": _sources(entry)}
+    return {"type": kind, **agent}

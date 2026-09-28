@@ -5,7 +5,7 @@ Pages   /            the demo bank website with the Léa chat
         /admin       the evals console, a separate site for the admin
 API     POST /api/chat        one customer message        → lea.chat
         POST /api/confirm     tap on the card-lock card    → lea.confirm
-        GET  /api/admin/...   the console's data: summary, runs, traces, cost, agent, health
+        GET  /api/admin/...   the console's data: summary, runs, traces, cost, agents, health
         POST /api/admin/runs  start a golden-set run
         GET  /health
 
@@ -57,8 +57,7 @@ def admin():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "agent_id": lea.AGENT_ID, "agent_version": lea.AGENT_VERSION or "latest",
-            "has_key": lea.has_api_key()}
+    return {"ok": True, "agents": {role: a["id"] for role, a in lea.AGENTS.items()}, "has_key": lea.has_api_key()}
 
 
 # ----------------------------------------------------------------------------- the chat
@@ -93,7 +92,8 @@ def confirm(payload: dict):
 @app.get("/api/admin/summary")
 def admin_summary():
     return {
-        "agent": {"id": lea.AGENT_ID, "version": lea.AGENT_VERSION or "latest", "moderation": guardrails.MODERATION_MODEL},
+        "agents": [{"role": role, **{k: a[k] for k in ("id", "label", "model", "tools")}} for role, a in lea.AGENTS.items()],
+        "moderation": guardrails.MODERATION_MODEL,
         "live": metrics.summary("live"), "eval": metrics.summary("eval"),
         "recent": metrics.recent_turns(60), "runs": metrics.runs(),
         "thresholds": guardrails.THRESHOLDS, "monitored": guardrails.MONITORED,
@@ -112,6 +112,11 @@ def admin_start_run():
         return _no_key()
     run_id, message = evals.start_in_background()
     return JSONResponse({"run_id": run_id, "message": message}, status_code=202 if run_id else 429)
+
+
+@app.get("/api/admin/cases")
+def admin_cases():
+    return evals.load_cases()
 
 
 @app.get("/api/admin/traces")
@@ -153,44 +158,61 @@ def _dump(obj: Any) -> Any:
     return obj.model_dump(mode="json") if hasattr(obj, "model_dump") else obj
 
 
-def _library_ids(agent: dict[str, Any]) -> list[str]:
-    return [i for t in agent.get("tools") or [] if t.get("type") == "document_library" for i in t.get("library_ids") or []]
+def _library_ids(agents: list[dict[str, Any]]) -> list[str]:
+    return sorted({i for agent in agents for t in agent.get("tools") or [] if t.get("type") == "document_library"
+                   for i in t.get("library_ids") or []})
+
+
+def _studio_agents() -> list[dict[str, Any]]:
+    """The four agents as Studio has them now, with their role and the roles they hand off to."""
+    agents = []
+    for role, config in lea.AGENTS.items():
+        agent = _dump(lea.client().beta.agents.get(agent_id=config["id"]))
+        agent["role"], agent["label"] = role, config["label"]
+        agent["hands_off_to"] = [lea.ROLE_BY_ID.get(i, i) for i in agent.get("handoffs") or []]
+        agents.append(agent)
+    return agents
 
 
 def _agent_facts() -> dict[str, Any]:
-    agent = _dump(lea.client().beta.agents.get(agent_id=lea.AGENT_ID))
+    agents = _studio_agents()
     libraries = []
-    for library_id in _library_ids(agent):
+    for library_id in _library_ids(agents):
         library = _dump(lea.client().beta.libraries.get(library_id=library_id))
         documents = _dump(lea.client().beta.libraries.documents.list(library_id=library_id))
         library["documents"] = [{k: d.get(k) for k in ("name", "size", "process_status", "last_processed_at")}
                                 for d in (documents.get("data") or [])]
         libraries.append(library)
-    return {"agent": agent, "libraries": libraries}
+    return {"agents": agents, "libraries": libraries}
 
 
-@app.get("/api/admin/agent")
+@app.get("/api/admin/agents")
 def admin_agent():
     if not lea.has_api_key():
         return _no_key()
     try:
         return _cached("agent", 60, _agent_facts)
     except Exception as e:  # noqa: BLE001
-        return JSONResponse({"error": f"Could not read the agent from Mistral: {e}"}, status_code=502)
+        return JSONResponse({"error": f"Could not read the agents from Mistral: {e}"}, status_code=502)
 
 
 def _health() -> dict[str, Any]:
     checks = [{"name": "API key on the server", "ok": lea.has_api_key(),
                "detail": "MISTRAL_API_KEY is set" if lea.has_api_key() else "set MISTRAL_API_KEY in Render"}]
     if lea.has_api_key():
-        agent = None
+        agents = []
         try:
-            agent = _dump(lea.client().beta.agents.get(agent_id=lea.AGENT_ID))
-            checks.append({"name": "Studio agent reachable", "ok": True,
-                           "detail": f"{agent.get('name')}, version {agent.get('version')}, {agent.get('model')}"})
+            agents = _studio_agents()
+            checks.append({"name": "Studio agents reachable", "ok": True,
+                           "detail": " · ".join(f"{a['label']} v{a.get('version')} {a.get('model')}" for a in agents)})
+            wrong = [a["label"] for a in agents
+                     if sorted(a["hands_off_to"]) != sorted(lea.AGENTS[a["role"]]["hands_off_to"])]
+            checks.append({"name": "Handoffs as in studio/agents.json", "ok": not wrong,
+                           "detail": "triage → FAQ, account, card; each back to triage" if not wrong
+                           else "different in Studio: " + ", ".join(wrong)})
         except Exception as e:  # noqa: BLE001
-            checks.append({"name": "Studio agent reachable", "ok": False, "detail": str(e)[:200]})
-        for library_id in _library_ids(agent or {}):
+            checks.append({"name": "Studio agents reachable", "ok": False, "detail": str(e)[:200]})
+        for library_id in _library_ids(agents):
             try:
                 docs = _dump(lea.client().beta.libraries.documents.list(library_id=library_id))
                 checks.append({"name": "Library readable with the server's key", "ok": True,
